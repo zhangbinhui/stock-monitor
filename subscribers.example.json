@@ -1,0 +1,10 @@
+{
+  "subscribers": [
+    {
+      "email": "example@qq.com",
+      "name": "示例用户",
+      "active": true,
+      "added": "2026-01-01"
+    }
+  ]
+}
