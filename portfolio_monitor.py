@@ -1,0 +1,805 @@
+#!/usr/bin/env python3
+"""
+系统B：持仓管理监控
+- 读取 portfolio.json
+- 获取实时行情 + 公告扫描
+- 对ETF用均线判断，对个股用基本面判断
+- 推送渠道：Telegram / 邮件
+- 模式：daily（日报）/ alert（盘中止损监控）
+"""
+
+import json
+import os
+import sys
+import logging
+import requests
+import smtplib
+import re
+import time
+import numpy as np
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+try:
+    import akshare as ak
+except ImportError:
+    print("请安装 akshare: pip install akshare")
+    sys.exit(1)
+
+from config import EMAIL_SENDER, EMAIL_PASSWORD, SMTP_SERVER, SMTP_PORT
+
+log = logging.getLogger("portfolio")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+PORTFOLIO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portfolio.json")
+ALERT_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "alert_state.json")
+
+# Telegram 配置（从环境变量读取）
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
+TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "")
+
+
+def load_portfolio() -> Dict:
+    with open(PORTFOLIO_FILE, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def load_alert_state() -> Dict:
+    """加载止损报警状态（避免重复推送）"""
+    if os.path.exists(ALERT_STATE_FILE):
+        with open(ALERT_STATE_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+
+def save_alert_state(state: Dict):
+    with open(ALERT_STATE_FILE, 'w') as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+
+def get_realtime_prices(codes: List[str]) -> Dict[str, Dict]:
+    """腾讯实时行情"""
+    try:
+        qq_codes = []
+        for code in codes:
+            prefix = "sh" if code.startswith(('5', '6')) else "sz"
+            qq_codes.append(f'{prefix}{code}')
+
+        url = f"http://qt.gtimg.cn/q={','.join(qq_codes)}"
+        r = requests.get(url, timeout=5, proxies={'http': '', 'https': ''})
+
+        result = {}
+        for line in r.text.strip().split(';'):
+            line = line.strip()
+            if not line or '~' not in line:
+                continue
+            parts = line.split('~')
+            if len(parts) < 45:
+                continue
+            code = parts[2]
+            try:
+                result[code] = {
+                    'price': float(parts[3]),
+                    'prev_close': float(parts[4]),
+                    'open': float(parts[5]),
+                    'high': float(parts[33]),
+                    'low': float(parts[34]),
+                    'change_pct': float(parts[32]),
+                    'volume': float(parts[36]) if parts[36] else 0,
+                    'name': parts[1],
+                }
+            except (ValueError, IndexError):
+                continue
+        return result
+    except Exception as e:
+        log.warning(f"获取实时行情失败: {e}")
+        return {}
+
+
+def get_etf_ma_data(code: str) -> Dict:
+    """获取ETF均线数据（新浪源）"""
+    prefix = "sh" if code.startswith(('5', '6')) else "sz"
+    symbol = f"{prefix}{code}"
+    try:
+        df = ak.fund_etf_hist_sina(symbol=symbol)
+        if df is None or df.empty:
+            return {}
+        df = df.sort_values('date').reset_index(drop=True)
+        closes = df['close'].values
+        if len(closes) < 60:
+            return {}
+
+        ma5 = closes[-5:].mean()
+        ma10 = closes[-10:].mean()
+        ma20 = closes[-20:].mean()
+        ma30 = closes[-30:].mean() if len(closes) >= 30 else None
+        ma60 = closes[-60:].mean()
+        current = closes[-1]
+
+        if ma30 and current > ma10 > ma20 > ma30 > ma60:
+            arrangement = "多头排列"
+            signal = "🟢 持有"
+        elif ma30 and current < ma10 < ma20 < ma30 < ma60:
+            arrangement = "空头排列"
+            signal = "🔴 空仓回避"
+        elif current > ma20 > ma60:
+            arrangement = "偏多"
+            signal = "🟢 持有"
+        elif current < ma20 < ma60:
+            arrangement = "偏空"
+            signal = "🔴 考虑减仓"
+        elif current > ma20 and current < ma60:
+            arrangement = "反弹中"
+            signal = "🟡 观察"
+        elif current < ma20 and current > ma60:
+            arrangement = "回调中"
+            signal = "🟡 关注MA60支撑"
+        else:
+            arrangement = "纠缠"
+            signal = "🟡 观望"
+
+        return {
+            'ma5': ma5, 'ma10': ma10, 'ma20': ma20, 'ma30': ma30, 'ma60': ma60,
+            'arrangement': arrangement, 'signal': signal,
+            'bias_ma20': (current - ma20) / ma20 * 100,
+            'bias_ma60': (current - ma60) / ma60 * 100,
+        }
+    except Exception as e:
+        log.warning(f"获取ETF {code} 均线数据失败: {e}")
+        return {}
+
+
+# ============================================================
+# 公告扫描（高管减持 / 业绩 / 监管处罚等重大公告）
+# ============================================================
+
+def scan_announcements(codes: List[str], names: Dict[str, str]) -> List[Dict]:
+    """
+    扫描持仓股票的重大公告
+    返回: [{"code", "name", "type", "title", "date", "level", "action"}]
+    """
+    alerts = []
+
+    # 1. 高管减持（巨潮）
+    alerts.extend(_scan_insider_selling(codes, names))
+
+    # 2. 重大公告关键词（巨潮搜索）
+    alerts.extend(_scan_key_announcements(codes, names))
+
+    return alerts
+
+
+def _scan_insider_selling(codes: List[str], names: Dict[str, str]) -> List[Dict]:
+    """检查持仓股高管减持"""
+    alerts = []
+    try:
+        df = ak.stock_hold_management_detail_cninfo(symbol="减持")
+        if df is None or df.empty:
+            return alerts
+        cutoff = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+        for code in codes:
+            matches = df[df['证券代码'] == code]
+            if matches.empty:
+                continue
+            # 只看最近30天
+            recent = matches[matches['截止日期'].astype(str) >= cutoff]
+            if recent.empty:
+                continue
+            latest_date = str(recent['截止日期'].max())[:10]
+            total_rows = len(recent)
+            alerts.append({
+                "code": code,
+                "name": names.get(code, code),
+                "type": "高管减持",
+                "title": f"近30天有{total_rows}笔高管减持",
+                "date": latest_date,
+                "level": "danger",
+                "action": "内部人在卖，强烈建议清仓"
+            })
+    except Exception as e:
+        log.warning(f"检查高管减持失败: {e}")
+    return alerts
+
+
+def _scan_key_announcements(codes: List[str], names: Dict[str, str]) -> List[Dict]:
+    """
+    通过巨潮/同花顺检查重大公告关键词
+    关键词：立案调查、行政处罚、业绩预亏、业绩大幅下降、退市风险、ST
+    """
+    alerts = []
+    danger_keywords = ["立案调查", "行政处罚", "监管措施", "退市风险警示", "暂停上市",
+                       "业绩预亏", "业绩大幅下降", "重大亏损"]
+    warning_keywords = ["业绩预减", "业绩修正", "股东减持", "质押"]
+
+    for code in codes:
+        try:
+            # 用同花顺个股公告
+            df = ak.stock_notice_report(symbol=code)
+            if df is None or df.empty:
+                continue
+            # 只看最近7天的公告
+            cutoff = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+            for _, row in df.iterrows():
+                pub_date = str(row.get('公告日期', ''))[:10]
+                if pub_date < cutoff:
+                    continue
+                title = str(row.get('公告标题', ''))
+
+                for kw in danger_keywords:
+                    if kw in title:
+                        alerts.append({
+                            "code": code,
+                            "name": names.get(code, code),
+                            "type": "重大公告",
+                            "title": title[:50],
+                            "date": pub_date,
+                            "level": "danger",
+                            "action": f"⚠️ 检测到「{kw}」，立即评估是否清仓"
+                        })
+                        break
+
+                for kw in warning_keywords:
+                    if kw in title:
+                        alerts.append({
+                            "code": code,
+                            "name": names.get(code, code),
+                            "type": "关注公告",
+                            "title": title[:50],
+                            "date": pub_date,
+                            "level": "warning",
+                            "action": f"关注「{kw}」"
+                        })
+                        break
+        except Exception as e:
+            log.debug(f"检查 {code} 公告失败: {e}")
+
+    return alerts
+
+
+def get_stock_fundamental_signals(code: str, stock_type_hint: str = None) -> Tuple[List[Dict], str]:
+    """
+    获取个股基本面信号（利润趋势 + 分类相关预警）
+    返回: (signals, stock_type)
+    """
+    signals = []
+    stock_type = stock_type_hint or "未知"
+
+    try:
+        fin_q = ak.stock_financial_abstract_ths(symbol=code, indicator="按报告期")
+        if fin_q is None or fin_q.empty:
+            return signals, stock_type
+
+        def parse_amount(val):
+            if val is None or str(val).strip() in ('', '-', 'None', 'nan'):
+                return None
+            s = str(val).replace(',', '')
+            if '亿' in s:
+                return float(s.replace('亿', ''))
+            elif '万' in s:
+                return float(s.replace('万', '')) / 10000
+            try:
+                return float(s)
+            except:
+                return None
+
+        def parse_pct(val):
+            if val is None or str(val).strip() in ('', '-', 'None', 'nan', 'False'):
+                return None
+            s = str(val).replace('%', '').replace(',', '')
+            try:
+                return float(s)
+            except:
+                return None
+
+        period_profit = {}
+        period_rev = {}
+        period_gm = {}
+        for _, row in fin_q.iterrows():
+            period = str(row.get("报告期", ""))
+            profit = parse_amount(row.get("扣非净利润")) or parse_amount(row.get("净利润"))
+            rev = parse_amount(row.get("营业总收入"))
+            gm = parse_pct(row.get("销售毛利率"))
+            if period:
+                if profit is not None:
+                    period_profit[period] = profit
+                if rev is not None:
+                    period_rev[period] = rev
+                if gm is not None:
+                    period_gm[period] = gm
+
+        sorted_periods = sorted(period_profit.keys(), reverse=True)
+
+        # === 利润趋势 ===
+        yoy_changes = []
+        for p in sorted_periods[:4]:
+            year = int(p[:4])
+            prev_p = f"{year-1}{p[4:]}"
+            if prev_p in period_profit and period_profit[prev_p] != 0:
+                yoy = (period_profit[p] - period_profit[prev_p]) / abs(period_profit[prev_p])
+                yoy_changes.append((p, yoy))
+
+        if yoy_changes:
+            down_count = sum(1 for _, y in yoy_changes if y < -0.1)
+            up_count = sum(1 for _, y in yoy_changes if y > 0.1)
+
+            if down_count >= len(yoy_changes) * 0.75:
+                signals.append({
+                    "signal": "利润趋势下降",
+                    "level": "danger",
+                    "detail": " | ".join(f"{p}:{y:+.0%}" for p, y in yoy_changes),
+                    "action": "基本面恶化，考虑减仓或清仓"
+                })
+            elif down_count >= len(yoy_changes) * 0.5:
+                signals.append({
+                    "signal": "利润增速放缓",
+                    "level": "warning",
+                    "detail": " | ".join(f"{p}:{y:+.0%}" for p, y in yoy_changes),
+                    "action": "关注后续季度表现"
+                })
+
+            # 周期股利润拐点
+            if up_count >= len(yoy_changes) * 0.75:
+                signals.append({
+                    "signal": "🟢 利润拐点向上",
+                    "level": "info",
+                    "detail": " | ".join(f"{p}:{y:+.0%}" for p, y in yoy_changes),
+                    "action": "周期反转信号，继续持有"
+                })
+
+        # === 营收增速趋势（成长股放缓预警） ===
+        rev_yoy_list = []
+        for p in sorted_periods[:4]:
+            year = int(p[:4])
+            prev_p = f"{year-1}{p[4:]}"
+            if prev_p in period_rev and period_rev[prev_p] != 0:
+                rev_yoy = (period_rev[p] - period_rev[prev_p]) / abs(period_rev[prev_p]) * 100
+                rev_yoy_list.append((p, rev_yoy))
+
+        if rev_yoy_list and len(rev_yoy_list) >= 2:
+            latest_rev_g = rev_yoy_list[0][1]
+            prev_rev_g = rev_yoy_list[1][1]
+            if prev_rev_g > 20 and latest_rev_g < prev_rev_g * 0.5:
+                signals.append({
+                    "signal": f"营收增速放缓({prev_rev_g:.0f}%→{latest_rev_g:.0f}%)",
+                    "level": "warning",
+                    "detail": " | ".join(f"{p}:+{y:.0f}%" for p, y in rev_yoy_list),
+                    "action": "成长放缓，关注PEG变化"
+                })
+
+        # === 毛利率趋势 ===
+        gm_sorted = sorted(period_gm.items(), key=lambda x: x[0], reverse=True)
+        if len(gm_sorted) >= 3:
+            gm_vals = [v for _, v in gm_sorted[:3]]
+            if all(gm_vals[i] < gm_vals[i+1] for i in range(len(gm_vals)-1)):
+                signals.append({
+                    "signal": f"毛利率连续下滑({gm_vals[-1]:.1f}%→{gm_vals[0]:.1f}%)",
+                    "level": "warning",
+                    "detail": " | ".join(f"{p}:{v:.1f}%" for p, v in gm_sorted[:3]),
+                    "action": "盈利能力下降"
+                })
+
+        # === 最新季度亏损 ===
+        if sorted_periods and period_profit.get(sorted_periods[0], 0) < 0:
+            signals.append({
+                "signal": "最新季度亏损",
+                "level": "danger",
+                "detail": f"{sorted_periods[0]}: {period_profit[sorted_periods[0]]:.2f}亿",
+                "action": "亏损股建议清仓"
+            })
+
+        # === 自动分类 ===
+        latest_profit = period_profit.get(sorted_periods[0]) if sorted_periods else None
+        latest_rev_g_val = rev_yoy_list[0][1] if rev_yoy_list else 0
+        latest_profit_g = yoy_changes[0][1] * 100 if yoy_changes else 0
+
+        if latest_profit is not None and latest_profit < 0:
+            if latest_rev_g_val > 30:
+                stock_type = "困境反转"
+            else:
+                stock_type = "亏损"
+        elif latest_rev_g_val > 15 and latest_profit_g > 15:
+            stock_type = "成长股"
+        elif latest_profit_g > 50 or latest_profit_g < -50:
+            stock_type = "周期股"
+        else:
+            stock_type = "价值股"
+
+    except Exception as e:
+        log.warning(f"获取 {code} 基本面信号失败: {e}")
+
+    return signals, stock_type
+
+
+# ============================================================
+# 核心分析
+# ============================================================
+
+def analyze_portfolio(include_announcements=True) -> Tuple[str, List[Dict]]:
+    """
+    分析持仓，返回 (report_text, announcement_alerts)
+    """
+    portfolio = load_portfolio()
+    account = portfolio['accounts'][0]
+    rules = portfolio.get('rules', {})
+
+    holdings = account['holdings']
+    all_codes = [h['code'] for h in holdings]
+    code_names = {h['code']: h['name'] for h in holdings}
+
+    # 获取实时行情
+    rt = get_realtime_prices(all_codes)
+    log.info(f"获取实时行情: {len(rt)}/{len(all_codes)}")
+
+    total_assets = account['total_assets']
+    available = account['available_cash']
+
+    results = []
+    total_market_value = 0
+    total_pnl = 0
+
+    for h in holdings:
+        code = h['code']
+        name = h['name']
+        shares = h['shares']
+        cost = h['cost']
+        h_type = h.get('type', 'stock')
+
+        if code in rt:
+            price = rt[code]['price']
+            change_pct = rt[code]['change_pct']
+        else:
+            price = cost
+            change_pct = 0
+
+        market_value = price * shares
+        pnl = (price - cost) * shares
+        pnl_pct = (price - cost) / cost * 100
+        position_pct = market_value / total_assets * 100
+
+        total_market_value += market_value
+        total_pnl += pnl
+
+        signals = []
+        advice = "持有"
+        advice_icon = "🟢"
+        detected_type = "指数ETF" if h_type == 'etf' else "未知"
+
+        stop_method = h.get('stop_method', 'price')
+
+        if h_type == 'etf' and stop_method == 'ma':
+            ma_data = get_etf_ma_data(code)
+            if ma_data:
+                arr = ma_data['arrangement']
+                if "空头" in arr:
+                    signals.append({"signal": f"均线{arr}", "level": "danger", "action": "🔴 空头排列，建议清仓"})
+                    advice = "均线空头，清仓"
+                    advice_icon = "🔴"
+                elif "偏空" in arr:
+                    signals.append({"signal": f"均线{arr}", "level": "warning", "action": "偏空，考虑减仓"})
+                    advice = "均线偏空，减仓"
+                    advice_icon = "🟡"
+                elif "回调" in arr:
+                    signals.append({"signal": f"均线{arr}，关注MA60支撑", "level": "warning", "action": "跌破MA60则清仓"})
+                    if advice_icon == "🟢":
+                        advice_icon = "🟡"
+                        advice = "回调中，关注MA60"
+                else:
+                    signals.append({"signal": f"均线{arr}", "level": "info", "action": ma_data['signal']})
+
+                signals.append({
+                    "signal": f"偏离MA20 {ma_data['bias_ma20']:+.1f}% | MA60 {ma_data['bias_ma60']:+.1f}%",
+                    "level": "info", "action": ""
+                })
+        else:
+            stop_price = h.get('stop_price')
+            if stop_price:
+                if price <= stop_price:
+                    signals.append({"signal": f"‼️ 跌破止损价{stop_price}", "level": "danger", "action": "按计划止损清仓"})
+                    advice = "触及止损价，清仓"
+                    advice_icon = "🔴"
+                elif price <= stop_price * 1.05:
+                    signals.append({"signal": f"接近止损价{stop_price}（仅差{(price/stop_price-1)*100:.1f}%）", "level": "warning", "action": "密切关注"})
+
+            # 基本面
+            fund_signals, detected_type = get_stock_fundamental_signals(code)
+            # portfolio.json中手动指定的分类优先
+            if h.get('stock_class'):
+                detected_type = h['stock_class']
+            signals.extend(fund_signals)
+            for s in fund_signals:
+                if s['level'] == 'danger' and advice_icon != "🔴":
+                    advice = s['action']
+                    advice_icon = "🔴"
+                elif s['level'] == 'warning' and advice_icon == "🟢":
+                    advice = s['action']
+                    advice_icon = "🟡"
+
+            insider_price = h.get('insider_avg_price')
+            if insider_price:
+                insider_pct = (price - insider_price) / insider_price * 100
+                if insider_pct < -15:
+                    signals.append({"signal": f"深度跌破增持均价({insider_pct:.0f}%)", "level": "danger", "action": "基本面可能有问题"})
+                elif insider_pct < 0:
+                    signals.append({"signal": f"跌破增持均价({insider_pct:.0f}%)", "level": "warning", "action": "关注基本面"})
+                else:
+                    signals.append({"signal": f"高于增持均价{insider_pct:.0f}%", "level": "info", "action": ""})
+
+        # 股票分类标签
+        s_type = detected_type if h_type != 'etf' else "指数ETF"
+
+        results.append({
+            'code': code, 'name': name, 'type': h_type,
+            'shares': shares, 'cost': cost, 'price': price,
+            'change_pct': change_pct, 'market_value': market_value,
+            'pnl': pnl, 'pnl_pct': pnl_pct, 'position_pct': position_pct,
+            'signals': signals, 'advice': advice, 'advice_icon': advice_icon,
+            'stop_price': h.get('stop_price'), 'stock_type': s_type,
+        })
+
+    # 公告扫描
+    ann_alerts = []
+    if include_announcements:
+        log.info("扫描公告...")
+        stock_codes = [h['code'] for h in holdings if h.get('type') != 'etf']
+        if stock_codes:
+            ann_alerts = scan_announcements(stock_codes, code_names)
+            log.info(f"公告扫描完成: {len(ann_alerts)} 条提醒")
+
+    cash_pct = available / total_assets * 100
+    today_pnl = sum(r['price'] * r['shares'] * r['change_pct'] / 100 for r in results)
+
+    report = format_report(account, results, total_market_value, total_pnl, today_pnl, cash_pct, ann_alerts)
+    return report, ann_alerts
+
+
+# ============================================================
+# 盘中止损监控（轻量模式）
+# ============================================================
+
+def check_stop_loss_alerts() -> Optional[str]:
+    """
+    轻量止损检查：只查实时价格，触及止损才返回消息
+    返回 None 表示无报警
+    """
+    portfolio = load_portfolio()
+    account = portfolio['accounts'][0]
+    holdings = account['holdings']
+    all_codes = [h['code'] for h in holdings]
+
+    rt = get_realtime_prices(all_codes)
+    if not rt:
+        return None
+
+    # 加载已报警状态（每天重置）
+    state = load_alert_state()
+    today = datetime.now().strftime('%Y-%m-%d')
+    if state.get('date') != today:
+        state = {'date': today, 'alerted': {}}
+
+    alerts = []
+    for h in holdings:
+        code = h['code']
+        price = rt.get(code, {}).get('price')
+        if not price:
+            continue
+
+        stop_method = h.get('stop_method', 'price')
+
+        if stop_method == 'price':
+            stop_price = h.get('stop_price')
+            if stop_price and price <= stop_price:
+                alert_key = f"{code}_stop"
+                if alert_key not in state['alerted']:
+                    alerts.append(f"🚨 <b>{h['name']}({code})</b> 触及止损!\n   现价 {price} ≤ 止损价 {stop_price}\n   ➡️ 按计划止损清仓")
+                    state['alerted'][alert_key] = datetime.now().isoformat()
+            elif stop_price and price <= stop_price * 1.03:
+                alert_key = f"{code}_near_stop"
+                if alert_key not in state['alerted']:
+                    gap = (price / stop_price - 1) * 100
+                    alerts.append(f"⚠️ <b>{h['name']}({code})</b> 接近止损!\n   现价 {price}，距止损价 {stop_price} 仅 {gap:.1f}%\n   ➡️ 密切关注")
+                    state['alerted'][alert_key] = datetime.now().isoformat()
+
+        # ETF 硬止损（备用，比如跌幅超大）
+        if h.get('type') == 'etf':
+            cost = h['cost']
+            pnl_pct = (price - cost) / cost * 100
+            if pnl_pct <= -25:
+                alert_key = f"{code}_etf_hard_stop"
+                if alert_key not in state['alerted']:
+                    alerts.append(f"🚨 <b>{h['name']}({code})</b> 亏损{pnl_pct:.1f}%!\n   现价 {price}，成本 {cost}\n   ➡️ 严重亏损，建议止损")
+                    state['alerted'][alert_key] = datetime.now().isoformat()
+
+    if alerts:
+        save_alert_state(state)
+        header = f"🔔 <b>盘中止损预警</b> {datetime.now().strftime('%H:%M')}\n"
+        return header + "\n\n".join(alerts)
+
+    save_alert_state(state)
+    return None
+
+
+# ============================================================
+# 报告格式化
+# ============================================================
+
+def format_report(account, results, total_mv, total_pnl, today_pnl, cash_pct, ann_alerts=None) -> str:
+    """生成持仓日报（HTML格式，兼容Telegram和邮件）"""
+    now = datetime.now()
+    total_assets = account['total_assets']
+
+    lines = []
+    lines.append(f"📊 <b>持仓日报</b> {now.strftime('%Y-%m-%d %H:%M')}")
+    lines.append("")
+    lines.append(f"💰 <b>{account['name']}</b> 总资产 {total_assets/10000:.2f}万")
+    lines.append(f"   持仓 {total_mv/10000:.2f}万 | 现金 {account['available_cash']/10000:.2f}万({cash_pct:.0f}%)")
+
+    today_icon = "📈" if today_pnl >= 0 else "📉"
+    pnl_dir = "+" if total_pnl >= 0 else ""
+    today_dir = "+" if today_pnl >= 0 else ""
+    lines.append(f"   总盈亏 {pnl_dir}{total_pnl:,.0f}元 | {today_icon} 今日 {today_dir}{today_pnl:,.0f}元")
+    lines.append("")
+
+    # 公告提醒（置顶）
+    if ann_alerts:
+        lines.append("━━━ 📢 公告提醒 ━━━")
+        for a in ann_alerts:
+            icon = "🔴" if a['level'] == 'danger' else "🟡"
+            lines.append(f"{icon} <b>{a['name']}</b> [{a['type']}] {a['date']}")
+            lines.append(f"   {a['title']}")
+            lines.append(f"   ➡️ {a['action']}")
+        lines.append("")
+
+    # 持仓明细
+    lines.append("━━━ 💼 持仓明细 ━━━")
+    for r in results:
+        type_tag = f" [{r.get('stock_type', '')}]" if r.get('stock_type') else ""
+        lines.append(f"\n{r['advice_icon']} <b>{r['name']}</b> ({r['code']}){type_tag}")
+        pnl_pct_str = f"{r['pnl_pct']:+.2f}%"
+        pnl_str = f"{r['pnl']:+,.0f}元"
+        chg_str = f"{r['change_pct']:+.2f}%"
+        lines.append(f"   现价 {r['price']:.3f} | 成本 {r['cost']:.3f} | {pnl_pct_str} ({pnl_str})")
+        lines.append(f"   仓位 {r['position_pct']:.1f}% | 市值 {r['market_value']/10000:.2f}万 | 今日 {chg_str}")
+
+        stop_price = r.get('stop_price')
+        if stop_price:
+            gap = (r['price'] / stop_price - 1) * 100
+            lines.append(f"   止损价 {stop_price}（距离 {gap:.1f}%）")
+
+        for s in r['signals']:
+            level_icon = "🔴" if s['level'] == 'danger' else "🟡" if s['level'] == 'warning' else "ℹ️"
+            action_str = f" → {s['action']}" if s.get('action') else ""
+            lines.append(f"   {level_icon} {s['signal']}{action_str}")
+            if s.get('detail'):
+                lines.append(f"      <i>{s['detail']}</i>")
+
+    # 操作建议汇总
+    lines.append("")
+    actions = [r for r in results if r['advice_icon'] != "🟢"]
+    if actions or ann_alerts:
+        lines.append("━━━ 📋 操作建议 ━━━")
+        for r in actions:
+            lines.append(f"   {r['advice_icon']} {r['name']}: {r['advice']}")
+        if ann_alerts:
+            for a in ann_alerts:
+                icon = "🔴" if a['level'] == 'danger' else "🟡"
+                lines.append(f"   {icon} {a['name']}: {a['action']}")
+    else:
+        lines.append("━━━ 📋 操作建议 ━━━")
+        lines.append("   ✅ 无异常，正常持有")
+
+    return "\n".join(lines)
+
+
+# ============================================================
+# Telegram 推送
+# ============================================================
+
+def send_telegram(text: str, token: str = None, chat_id: str = None) -> bool:
+    """通过 Telegram Bot API 发送消息"""
+    token = token or TG_BOT_TOKEN
+    chat_id = chat_id or TG_CHAT_ID
+    if not token or not chat_id:
+        log.error("未配置 TG_BOT_TOKEN 或 TG_CHAT_ID")
+        return False
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    # Telegram 消息最长4096字符，超长截断
+    if len(text) > 4000:
+        text = text[:4000] + "\n\n... (内容过长已截断)"
+
+    try:
+        r = requests.post(url, json={
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }, timeout=10)
+        if r.status_code == 200 and r.json().get('ok'):
+            log.info(f"Telegram 推送成功")
+            return True
+        else:
+            log.error(f"Telegram 推送失败: {r.text}")
+            return False
+    except Exception as e:
+        log.error(f"Telegram 推送异常: {e}")
+        return False
+
+
+# ============================================================
+# 邮件推送
+# ============================================================
+
+def format_email_report(text_report: str) -> str:
+    html = text_report.replace("\n", "<br>")
+    return f"""
+    <html><body style="font-family:monospace;font-size:14px;line-height:1.8;padding:20px;color:#333;">
+    {html}
+    <br><br>
+    <p style="color:#999;font-size:11px;">此报告仅发送给账户持有人，请勿转发。</p>
+    </body></html>
+    """
+
+
+def send_email_report(html: str, to_email: str = "1225106113@qq.com"):
+    if not EMAIL_PASSWORD:
+        log.error("未配置SMTP授权码")
+        return
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
+            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = f"持仓日报 - {today}"
+            msg["From"] = EMAIL_SENDER
+            msg["To"] = to_email
+            msg.attach(MIMEText(html, "html", "utf-8"))
+            server.sendmail(EMAIL_SENDER, to_email, msg.as_string())
+            log.info(f"持仓日报发送成功: {to_email}")
+    except Exception as e:
+        log.error(f"发送失败: {e}")
+
+
+# ============================================================
+# 主入口
+# ============================================================
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="持仓管理监控（系统B）")
+    parser.add_argument("--mode", choices=["daily", "alert"], default="daily",
+                        help="daily=完整日报(含公告扫描), alert=盘中止损监控(轻量)")
+    parser.add_argument("--telegram", action="store_true", help="推送到Telegram")
+    parser.add_argument("--email", action="store_true", help="发送邮件")
+    parser.add_argument("--stdout", action="store_true", help="输出到终端（默认）")
+    args = parser.parse_args()
+
+    if args.mode == "alert":
+        # === 盘中止损监控 ===
+        alert_msg = check_stop_loss_alerts()
+        if alert_msg:
+            log.info("检测到止损预警!")
+            if args.telegram:
+                send_telegram(alert_msg)
+            else:
+                clean = re.sub(r'<[^>]+>', '', alert_msg)
+                print(clean)
+        else:
+            log.info("无止损预警")
+    else:
+        # === 完整日报 ===
+        report, ann_alerts = analyze_portfolio(include_announcements=True)
+
+        if args.telegram:
+            send_telegram(report)
+        if args.email:
+            html = format_email_report(report)
+            send_email_report(html)
+        if not args.telegram and not args.email or args.stdout:
+            clean = re.sub(r'<[^>]+>', '', report)
+            print(clean)
+
+
+if __name__ == "__main__":
+    main()

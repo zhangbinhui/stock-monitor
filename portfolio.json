@@ -1,0 +1,58 @@
+{
+  "accounts": [
+    {
+      "name": "国金25万",
+      "broker": "国金证券",
+      "total_assets": 250426.92,
+      "available_cash": 131408.12,
+      "updated_at": "2026-02-25 11:03",
+      "holdings": [
+        {
+          "code": "513130",
+          "name": "恒生科技ETF",
+          "shares": 55600,
+          "cost": 0.819,
+          "original_cost": 0.745,
+          "original_shares": 111200,
+          "type": "etf",
+          "date_in": "2025-12-01",
+          "reason": "指数左侧",
+          "stop_method": "ma",
+          "notes": "减仓一半，均线止损"
+        },
+        {
+          "code": "605155",
+          "name": "西大门",
+          "shares": 2000,
+          "cost": 19.2653,
+          "type": "stock",
+          "stock_class": "成长股",
+          "date_in": "2026-02-24",
+          "reason": "三重过滤通过",
+          "insider_avg_price": 16.54,
+          "stop_method": "price",
+          "stop_price": 16.38
+        },
+        {
+          "code": "600873",
+          "name": "梅花生物",
+          "shares": 3800,
+          "cost": 10.747,
+          "type": "stock",
+          "stock_class": "周期股",
+          "date_in": "2026-01-01",
+          "reason": "回购利好",
+          "stop_method": "price",
+          "stop_price": 9.13
+        }
+      ]
+    }
+  ],
+  "rules": {
+    "stop_loss_pct": -15,
+    "max_single_position_pct": 30,
+    "max_total_positions": 3,
+    "etf_sell_by": "ma",
+    "stock_sell_by": "fundamental"
+  }
+}

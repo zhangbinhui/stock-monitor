@@ -61,6 +61,75 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
+def convert_etf_code_to_ak_format(code: str) -> str:
+    """将ETF代码转换为akshare stock_zh_a_daily可用的格式
+
+    规则: 1开头=sh, 0/3开头=sz, 5开头=sh
+    但159957是深交所创业板ETF，需要特殊处理：159开头=sz
+    """
+    if code.startswith('159'):
+        return f'sz{code}'
+    elif code.startswith(('0', '3')):
+        return f'sz{code}'
+    elif code.startswith(('1', '5', '6')):
+        return f'sh{code}'
+    else:
+        # 默认按首字母判断
+        if code[0] in '039':
+            return f'sz{code}'
+        else:
+            return f'sh{code}'
+
+
+def get_realtime_prices(codes: List[str]) -> Dict[str, Dict]:
+    """通过腾讯行情接口获取实时价格（不依赖push2）
+    
+    Args:
+        codes: 股票/ETF代码列表，如 ['600733', '510300']
+    Returns:
+        {代码: {'price': 最新价, 'prev_close': 昨收, 'change_pct': 涨跌幅}}
+    """
+    try:
+        # 转换代码格式
+        qq_codes = []
+        for code in codes:
+            if code.startswith(('5', '6')):
+                qq_codes.append(f'sh{code}')
+            else:
+                qq_codes.append(f'sz{code}')
+        
+        url = f"http://qt.gtimg.cn/q={','.join(qq_codes)}"
+        r = requests.get(url, timeout=5, proxies={'http': '', 'https': ''})
+        
+        result = {}
+        for line in r.text.strip().split(';'):
+            line = line.strip()
+            if not line or '~' not in line:
+                continue
+            parts = line.split('~')
+            if len(parts) < 33:
+                continue
+            code = parts[2]  # 纯数字代码
+            try:
+                price = float(parts[3]) if parts[3] else None
+                prev_close = float(parts[4]) if parts[4] else None
+                change_pct = float(parts[32]) if parts[32] else None
+                if price and price > 0:
+                    result[code] = {
+                        'price': price,
+                        'prev_close': prev_close,
+                        'change_pct': change_pct
+                    }
+            except (ValueError, IndexError):
+                continue
+        
+        log.info(f"获取实时行情: {len(result)}/{len(codes)} 只")
+        return result
+    except Exception as e:
+        log.warning(f"获取实时行情失败: {e}")
+        return {}
+
+
 def get_index_volume_price_data() -> List[Dict]:
     """获取指数ETF量价数据（陈老师量价法）"""
     ETF_LIST = [
@@ -70,82 +139,167 @@ def get_index_volume_price_data() -> List[Dict]:
         {"name": "科创50ETF", "code": "588000"},
         {"name": "恒生科技ETF", "code": "513130"},
     ]
-    
+
     results = []
     end_date = datetime.now().strftime("%Y%m%d")
     start_date = (datetime.now() - timedelta(days=400)).strftime("%Y%m%d")  # 1年+buffer
-    
+
     for etf in ETF_LIST:
         try:
             log.info(f"获取ETF数据: {etf['name']} ({etf['code']})")
-            df = ak.fund_etf_hist_em(symbol=etf['code'], period="daily",
-                                      start_date=start_date, end_date=end_date, adjust="qfq")
+            df = None
+
+            # ETF代码加前缀：5/6开头=sh，0/1/3开头=sz（159xxx是深交所ETF）
+            etf_code = etf['code']
+            if etf_code.startswith(('5', '6')):
+                etf_symbol = f'sh{etf_code}'
+            else:
+                etf_symbol = f'sz{etf_code}'
+
+            # 优先使用 fund_etf_hist_sina（新浪源，ETF专用，最稳定）
+            try:
+                log.info(f"  尝试使用新浪源: {etf_symbol}")
+                df = ak.fund_etf_hist_sina(symbol=etf_symbol)
+                if df is not None and not df.empty:
+                    # 新浪源列名：date, open, high, low, close, volume, amount
+                    df.rename(columns={
+                        'date': '日期',
+                        'close': '收盘',
+                        'volume': '成交量'
+                    }, inplace=True)
+                    log.info(f"  新浪源获取成功: {len(df)} 条数据")
+            except Exception as e:
+                log.warning(f"  新浪源失败: {e}")
+                df = None
+
+            # 备选：东财源
             if df is None or df.empty:
-                log.warning(f"  {etf['code']} 无数据")
+                try:
+                    log.info(f"  尝试使用东财源: {etf_code}")
+                    df = ak.fund_etf_hist_em(symbol=etf_code, period="daily",
+                                          start_date=start_date, end_date=end_date, adjust="qfq")
+                    if df is not None and not df.empty:
+                        log.info(f"  东财源获取成功: {len(df)} 条数据")
+                except Exception as e:
+                    log.warning(f"  东财源失败: {e}")
+                    df = None
+
+            if df is None or df.empty:
+                log.warning(f"  {etf['code']} 所有数据源都无数据")
                 continue
-            
+
             df = df.sort_values('日期').reset_index(drop=True)
             closes = df['收盘'].values
             volumes = df['成交量'].values
-            
+
             if len(closes) < 60:
                 log.warning(f"  {etf['code']} 数据不足60日")
                 continue
-            
+
             current_price = closes[-1]
             prev_price = closes[-2] if len(closes) >= 2 else current_price
             change_pct = (current_price - prev_price) / prev_price * 100
-            
+
+            ma10 = closes[-10:].mean()
             ma20 = closes[-20:].mean()
+            ma30 = closes[-30:].mean() if len(closes) >= 30 else None
             ma60 = closes[-60:].mean()
-            
+
+            # 均线排列判断
+            if ma30 and current_price > ma10 > ma20 > ma30 > ma60:
+                ma_arrangement = "多头排列"
+                ma_signal = "🟢 可买入"
+            elif ma30 and current_price < ma10 < ma20 < ma30 < ma60:
+                ma_arrangement = "空头排列"
+                ma_signal = "🔴 空仓回避"
+            elif current_price > ma20 > ma60:
+                ma_arrangement = "偏多"
+                ma_signal = "🟢 可持有"
+            elif current_price < ma20 < ma60:
+                ma_arrangement = "偏空"
+                ma_signal = "🔴 回避"
+            elif current_price > ma20 and current_price < ma60:
+                ma_arrangement = "反弹中"
+                ma_signal = "🟡 观察确认"
+            elif current_price < ma20 and current_price > ma60:
+                ma_arrangement = "回调中"
+                ma_signal = "🟡 等待企稳"
+            else:
+                ma_arrangement = "纠缠"
+                ma_signal = "🟡 观望"
+
+            # 价格相对均线位置
+            bias20 = (current_price - ma20) / ma20 * 100
+            bias60 = (current_price - ma60) / ma60 * 100
+
             # 趋势判断
             trend = "上行" if current_price > ma60 else "下行"
-            
+
             # 成交量均值
             vol_20 = volumes[-20:].mean()
             vol_60 = volumes[-60:].mean()
-            
-            # 成交量分位：20日均量在过去1年日均量中的百分位
-            # 用滚动20日均量序列
-            if len(volumes) >= 40:
+
+            # 成交量分位：20日均量在最近1年（250日）滚动20日均量中的百分位
+            recent_volumes = volumes[-250:] if len(volumes) > 250 else volumes
+            if len(recent_volumes) >= 40:
                 rolling_20_vols = []
-                for i in range(20, len(volumes) + 1):
-                    rolling_20_vols.append(volumes[i-20:i].mean())
+                for i in range(20, len(recent_volumes) + 1):
+                    rolling_20_vols.append(recent_volumes[i-20:i].mean())
                 rolling_20_vols = np.array(rolling_20_vols)
                 vol_percentile = (rolling_20_vols < vol_20).sum() / len(rolling_20_vols) * 100
             else:
                 vol_percentile = 50
-            
-            # 量价信号
-            if vol_percentile < 20 and current_price < ma60:
+
+            # 量价信号（结合量能分位 + 价格相对MA60位置 + 偏离度）
+            ma60_bias = (current_price - ma60) / ma60 * 100  # 偏离MA60百分比
+            if vol_percentile < 20 and ma60_bias < -3:
                 signal = "🟢 地量低位（左侧买点）"
-            elif vol_percentile < 20 and current_price >= ma60:
-                signal = "🟡 缩量上行（观察）"
-            elif vol_percentile > 80 and current_price > ma60:
+            elif vol_percentile < 20 and ma60_bias >= -3:
+                signal = "🟡 缩量整理（观察）"
+            elif vol_percentile > 80 and ma60_bias > 5:
                 signal = "🔴 天量高位（注意风险）"
-            elif vol_percentile > 80 and current_price <= ma60:
+            elif vol_percentile > 80 and ma60_bias < -5:
                 signal = "🟡 放量下跌（恐慌）"
+            elif vol_percentile > 80:
+                signal = "🟡 放量震荡（关注方向）"
             else:
                 signal = "⏳ 正常"
-            
+
             results.append({
                 "name": etf['name'],
                 "code": etf['code'],
                 "current_price": current_price,
                 "change_pct": change_pct,
+                "ma10": ma10,
                 "ma20": ma20,
+                "ma30": ma30,
                 "ma60": ma60,
                 "trend": trend,
+                "ma_arrangement": ma_arrangement,
+                "ma_signal": ma_signal,
+                "bias20": bias20,
+                "bias60": bias60,
                 "vol_20": vol_20,
                 "vol_60": vol_60,
                 "vol_percentile": vol_percentile,
                 "signal": signal,
             })
-            log.info(f"  {etf['name']}: 价格={current_price:.3f}, 涨跌={change_pct:.2f}%, 趋势={trend}, 量分位={vol_percentile:.0f}%, 信号={signal}")
+            log.info(f"  {etf['name']}: 价格={current_price:.3f}, 涨跌={change_pct:.2f}%, {ma_arrangement}, 偏离MA20={bias20:+.1f}%, 量分位={vol_percentile:.0f}%, 量价={signal}, 均线={ma_signal}")
         except Exception as e:
             log.warning(f"获取 {etf['name']} ({etf['code']}) 失败: {e}")
-    
+
+    # 用实时行情覆盖ETF当前价
+    if results:
+        etf_codes = [r['code'] for r in results]
+        rt_prices = get_realtime_prices(etf_codes)
+        for r in results:
+            if r['code'] in rt_prices:
+                rt = rt_prices[r['code']]
+                r['current_price'] = rt['price']
+                r['change_pct'] = rt['change_pct']
+                r['is_realtime'] = True
+                log.info(f"  {r['name']} 实时价格: {rt['price']}")
+
     return results
 
 
@@ -172,11 +326,11 @@ def fetch_data() -> pd.DataFrame:
 def filter_major_shareholders(df: pd.DataFrame) -> pd.DataFrame:
     """过滤大股东增持，只保留普通高管增持"""
     before_count = len(df)
-    
+
     # 过滤包含大股东关键词的记录
     for keyword in EXCLUDE_KEYWORDS:
         df = df[~df["董监高职务"].str.contains(keyword, na=False)]
-    
+
     log.info(f"过滤大股东增持后：{before_count} -> {len(df)} 条记录")
     return df
 
@@ -184,11 +338,11 @@ def filter_major_shareholders(df: pd.DataFrame) -> pd.DataFrame:
 def filter_st_stocks(df: pd.DataFrame) -> pd.DataFrame:
     """排除ST/退市风险股"""
     before_count = len(df)
-    
+
     # 排除证券简称包含ST、*ST、退的股票
     st_pattern = r'(\*?ST|退)'
     df = df[~df["证券简称"].str.contains(st_pattern, na=False, regex=True)]
-    
+
     log.info(f"排除ST/退市风险股后：{before_count} -> {len(df)} 条记录")
     return df
 
@@ -196,6 +350,7 @@ def filter_st_stocks(df: pd.DataFrame) -> pd.DataFrame:
 def get_market_cap(stock_code: str) -> Optional[float]:
     """获取公司市值（亿元）"""
     try:
+        # 优先尝试原方案 (可能用的是不同域名，还能用)
         info = ak.stock_individual_info_em(symbol=stock_code)
         for _, row in info.iterrows():
             if row['item'] == '总市值':
@@ -204,10 +359,41 @@ def get_market_cap(stock_code: str) -> Optional[float]:
                     return val / 1e8
                 else:
                     return float(str(val).replace(',', '')) / 1e8
+        log.warning(f"{stock_code} 原方案未找到总市值字段")
         return None
     except Exception as e:
-        log.warning(f"获取 {stock_code} 市值失败: {e}")
-        return None
+        log.warning(f"获取 {stock_code} 市值失败（原方案）: {e}")
+
+        # Fallback: 用日K线数据估算市值 = 最新收盘价 * 总股本
+        try:
+            log.info(f"  尝试用日K线数据估算 {stock_code} 市值")
+            # 转换股票代码格式
+            if stock_code.startswith(('0', '3')):
+                symbol = f'sz{stock_code}'
+            else:
+                symbol = f'sh{stock_code}'
+
+            # 获取最新日K数据
+            end_date = datetime.now().strftime("%Y%m%d")
+            start_date = (datetime.now() - timedelta(days=30)).strftime("%Y%m%d")
+            df = ak.stock_zh_a_daily(symbol=symbol, start_date=start_date, end_date=end_date)
+
+            if df is not None and not df.empty:
+                latest_close = df.iloc[-1]['close']  # 最新收盘价
+                outstanding_share = df.iloc[-1].get('outstanding_share', None)  # 总股本(股)
+
+                if outstanding_share and outstanding_share > 0:
+                    market_cap_yuan = latest_close * outstanding_share
+                    market_cap_yi = market_cap_yuan / 1e8
+                    log.info(f"  {stock_code} 估算市值: {market_cap_yi:.2f}亿元")
+                    return market_cap_yi
+
+            log.warning(f"  {stock_code} fallback方案也无法获取市值")
+            return None
+
+        except Exception as fallback_e:
+            log.warning(f"获取 {stock_code} 市值失败（fallback）: {fallback_e}")
+            return None
 
 
 def get_executive_salaries(stock_code: str) -> Dict[str, float]:
@@ -221,10 +407,10 @@ def get_executive_salaries(stock_code: str) -> Dict[str, float]:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Referer': 'https://emweb.securities.eastmoney.com/'
         }
-        
+
         response = requests.get(url, params=params, headers=headers, timeout=10)
         response.raise_for_status()
-        
+
         data = response.json()
         if 'gglb' in data:
             salaries = {}
@@ -234,7 +420,7 @@ def get_executive_salaries(stock_code: str) -> Dict[str, float]:
                 if name and salary and salary > 0:
                     # SALARY 单位是元，转为万元
                     salaries[name] = salary / 10000
-            
+
             log.info(f"获取 {stock_code} 高管薪酬: {len(salaries)} 位高管")
             return salaries
         else:
@@ -251,30 +437,69 @@ def get_stock_price_data(stock_code: str, earliest_date: str = None) -> Dict:
         # 获取最近3个月的日K线数据（确保至少90个交易日）
         end_date = datetime.now().strftime("%Y%m%d")
         start_date = (datetime.now() - timedelta(days=120)).strftime("%Y%m%d")
-        
-        df = ak.stock_zh_a_hist(symbol=stock_code, period="daily", 
-                               start_date=start_date, end_date=end_date, adjust="qfq")
-        
-        if df.empty:
+
+        # 转换股票代码格式为 akshare stock_zh_a_daily 可用格式
+        if stock_code.startswith(('0', '3')):  # 深交所
+            symbol = f'sz{stock_code}'
+        else:  # 上交所
+            symbol = f'sh{stock_code}'
+
+        df = None
+        try:
+            log.info(f"获取 {stock_code} 股价数据，使用腾讯源: {symbol}")
+            df = ak.stock_zh_a_daily(symbol=symbol, start_date=start_date, end_date=end_date)
+
+            if df is not None and not df.empty:
+                # stock_zh_a_daily 返回列: date, open, high, low, close, volume, amount, outstanding_share, turnover
+                # 需要映射为中文列名以保持兼容性
+                df.rename(columns={
+                    'date': '日期',
+                    'open': '开盘',
+                    'high': '最高',
+                    'low': '最低',
+                    'close': '收盘',
+                    'volume': '成交量',
+                    'amount': '成交额'
+                }, inplace=True)
+                log.info(f"  腾讯源获取成功: {len(df)} 条数据")
+            else:
+                log.warning(f"  腾讯源无数据")
+
+        except Exception as e:
+            log.warning(f"获取 {stock_code} 腾讯源股价数据失败: {e}")
+
+        # Fallback: 尝试原方案
+        if df is None or df.empty:
+            try:
+                log.info(f"  尝试原方案获取 {stock_code} 数据")
+                df = ak.stock_zh_a_hist(symbol=stock_code, period="daily",
+                                       start_date=start_date, end_date=end_date, adjust="qfq")
+                if df is not None and not df.empty:
+                    log.info(f"  原方案获取成功: {len(df)} 条数据")
+            except Exception as e:
+                log.warning(f"  原方案也失败: {e}")
+
+        if df is None or df.empty:
+            log.warning(f"获取 {stock_code} 股价数据失败：所有数据源都无数据")
             return {}
-        
+
         # 计算技术指标
         closes = df['收盘'].values
-        
+
         # 均线（10/20/30/60）
         ma10 = closes[-10:].mean() if len(closes) >= 10 else None
         ma20 = closes[-20:].mean() if len(closes) >= 20 else None
         ma30 = closes[-30:].mean() if len(closes) >= 30 else None
         ma60 = closes[-60:].mean() if len(closes) >= 60 else None
-        
+
         current_price = closes[-1]
         prev_price = closes[-2] if len(closes) >= 2 else current_price
-        
+
         # BIAS偏离率（20/30/60）
         bias20 = ((current_price - ma20) / ma20 * 100) if ma20 else None
         bias30 = ((current_price - ma30) / ma30 * 100) if ma30 else None
         bias60 = ((current_price - ma60) / ma60 * 100) if ma60 else None
-        
+
         # 判断均线排列（用10/20/30/60，精细分级）
         ma_status = "未知"
         timing_signal = "观望"
@@ -301,7 +526,7 @@ def get_stock_price_data(stock_code: str, earliest_date: str = None) -> Dict:
                     timing_signal = "🟡 关注"
                 else:
                     timing_signal = "⏳ 等待站上MA20"
-        
+
         # 如果提供了最早增持日期，计算增持公告日涨跌幅
         announcement_return = None
         if earliest_date:
@@ -311,27 +536,27 @@ def get_stock_price_data(stock_code: str, earliest_date: str = None) -> Dict:
                     announcement_date = datetime.strptime(earliest_date, "%Y-%m-%d")
                 else:
                     announcement_date = earliest_date
-                
+
                 # 在历史数据中找到对应日期
                 df['日期'] = pd.to_datetime(df['日期'])
                 df = df.sort_values('日期')
-                
+
                 # 找到增持公告日或之后第一个交易日的收盘价
                 announcement_price = None
                 for _, row in df.iterrows():
                     if row['日期'].date() >= announcement_date.date():
                         announcement_price = row['收盘']
                         break
-                
+
                 if announcement_price:
                     announcement_return = (current_price - announcement_price) / announcement_price * 100
-                    
+
             except Exception as e:
                 log.warning(f"计算 {stock_code} 增持公告日涨跌幅失败: {e}")
-        
+
         # 60日最高价（用于回撤止损计算）
         high_60d = float(df['最高'].tail(60).max()) if len(df) >= 60 else float(df['最高'].max())
-        
+
         return {
             "current_price": current_price,
             "prev_price": prev_price,
@@ -353,11 +578,13 @@ def get_stock_price_data(stock_code: str, earliest_date: str = None) -> Dict:
         return {}
 
 
-def get_fundamental_data(stock_code: str) -> Dict:
+def get_fundamental_data(stock_code: str, market_cap_yi: float = None) -> Dict:
     """获取基本面数据（同花顺财务摘要）"""
     result = {"revenue": None, "net_profit": None, "revenue_growth": None,
               "profit_growth": None, "roe": None, "pe_ratio": None, "pb_ratio": None,
-              "prev_net_profit": None, "profit_trend": None, "industry": None}
+              "prev_net_profit": None, "profit_trend": None, "industry": None,
+              "gross_margin": None, "gross_margin_prev": None, "revenue_growth_recent": None,
+              "ps_ratio": None, "market_cap_yi_val": market_cap_yi}
     try:
         # 从同花顺获取财务摘要（最可靠的接口）
         fin = ak.stock_financial_abstract_ths(symbol=stock_code, indicator="按年度")
@@ -392,20 +619,114 @@ def get_fundamental_data(stock_code: str) -> Dict:
             result["profit_growth"] = parse_pct(latest.get("净利润同比增长率"))
             result["roe"] = parse_pct(latest.get("净资产收益率"))
 
-            # 获取前一年净利润用于判断利润趋势
-            if len(fin) >= 2:
-                prev_row = fin.iloc[-2]
-                result["prev_net_profit"] = parse_amount(prev_row.get("净利润"))
+            # 毛利率（最新+上期）
+            try:
+                gm_latest = parse_pct(latest.get("销售毛利率"))
+                if gm_latest is not None:
+                    result["gross_margin"] = gm_latest
+                if len(fin) >= 2:
+                    gm_prev = parse_pct(fin.iloc[-2].get("销售毛利率"))
+                    if gm_prev is not None:
+                        result["gross_margin_prev"] = gm_prev
+            except:
+                pass
+
+            # 利润趋势：用最近4个季度同比数据判断
+            # 每个季度的净利润 vs 去年同期，看趋势方向
+            try:
+                fin_q = ak.stock_financial_abstract_ths(symbol=stock_code, indicator="按报告期")
+                if fin_q is not None and not fin_q.empty:
+                    # 构建 {报告期: 净利润} 映射
+                    period_profit = {}
+                    for _, qrow in fin_q.iterrows():
+                        period = str(qrow.get("报告期", ""))
+                        profit = parse_amount(qrow.get("扣非净利润")) or parse_amount(qrow.get("净利润"))
+                        if period and profit is not None:
+                            period_profit[period] = profit
+                    
+                    # 取最近4个季度的同比增长率
+                    sorted_periods = sorted(period_profit.keys(), reverse=True)
+                    yoy_changes = []
+                    trend_details = []
+                    for p in sorted_periods[:4]:
+                        year = int(p[:4])
+                        prev_period = f"{year-1}{p[4:]}"
+                        if prev_period in period_profit and period_profit[prev_period] != 0:
+                            yoy = (period_profit[p] - period_profit[prev_period]) / abs(period_profit[prev_period])
+                            yoy_changes.append(yoy)
+                            trend_details.append(f"{p}:{yoy:+.0%}")
+                    
+                    if yoy_changes:
+                        # 判断趋势：看多数季度的方向
+                        up_count = sum(1 for y in yoy_changes if y > 0.1)
+                        down_count = sum(1 for y in yoy_changes if y < -0.1)
+                        avg_yoy = sum(yoy_changes) / len(yoy_changes)
+                        
+                        if up_count >= len(yoy_changes) * 0.75:
+                            result["profit_trend"] = "上升"
+                        elif down_count >= len(yoy_changes) * 0.75:
+                            result["profit_trend"] = "下降"
+                        elif avg_yoy > 0.1:
+                            result["profit_trend"] = "上升"
+                        elif avg_yoy < -0.1:
+                            result["profit_trend"] = "下降"
+                        else:
+                            result["profit_trend"] = "持平"
+                        
+                        result["profit_trend_detail"] = " | ".join(trend_details)
+                        log.info(f"  {stock_code} 利润趋势({len(yoy_changes)}Q同比): {result['profit_trend']} [{result['profit_trend_detail']}]")
+                    # === 困境反转/成长放缓：季度营收增速 ===
+                    try:
+                        period_rev = {}
+                        period_gm = {}
+                        for _, qrow in fin_q.iterrows():
+                            period = str(qrow.get("报告期", ""))
+                            rev = parse_amount(qrow.get("营业总收入"))
+                            gm = parse_pct(qrow.get("销售毛利率"))
+                            if period and rev is not None:
+                                period_rev[period] = rev
+                            if period and gm is not None:
+                                period_gm[period] = gm
+
+                        # 最近季度营收同比
+                        rev_yoy_list = []
+                        for p in sorted_periods[:4]:
+                            year = int(p[:4])
+                            prev_p = f"{year-1}{p[4:]}"
+                            if prev_p in period_rev and period_rev[prev_p] != 0:
+                                rev_yoy = (period_rev[p] - period_rev[prev_p]) / abs(period_rev[prev_p]) * 100
+                                rev_yoy_list.append((p, rev_yoy))
+
+                        if rev_yoy_list:
+                            result["revenue_growth_recent"] = rev_yoy_list[0][1]  # 最新季度营收增速
+                            result["revenue_growth_trend"] = rev_yoy_list  # 全部季度营收增速列表
+
+                        # 毛利率季度趋势（用于困境反转判断）
+                        gm_sorted = sorted(period_gm.items(), key=lambda x: x[0], reverse=True)
+                        if len(gm_sorted) >= 2:
+                            result["gross_margin_q_latest"] = gm_sorted[0][1]
+                            result["gross_margin_q_prev"] = gm_sorted[1][1]
+                            result["gross_margin_q_trend"] = gm_sorted[:4]
+                    except Exception as rev_e:
+                        log.debug(f"季度营收增速计算失败: {rev_e}")
+
+            except Exception as trend_e:
+                log.debug(f"季度利润趋势计算失败: {trend_e}")
             
-            # 判断利润趋势
-            if result["net_profit"] is not None and result["prev_net_profit"] is not None:
-                diff_ratio = (result["net_profit"] - result["prev_net_profit"]) / abs(result["prev_net_profit"]) if result["prev_net_profit"] != 0 else 0
-                if diff_ratio > 0.1:
-                    result["profit_trend"] = "上升"
-                elif diff_ratio < -0.1:
-                    result["profit_trend"] = "下降"
-                else:
-                    result["profit_trend"] = "持平"
+            # Fallback: 如果季度数据没算出来，用年报对比
+            if result.get("profit_trend") is None:
+                if len(fin) >= 2:
+                    prev_row = fin.iloc[-2]
+                    prev_profit = parse_amount(prev_row.get("净利润"))
+                    if result["net_profit"] is not None and prev_profit is not None and prev_profit != 0:
+                        diff_ratio = (result["net_profit"] - prev_profit) / abs(prev_profit)
+                        if diff_ratio > 0.1:
+                            result["profit_trend"] = "上升"
+                        elif diff_ratio < -0.1:
+                            result["profit_trend"] = "下降"
+                        else:
+                            result["profit_trend"] = "持平"
+                        result["profit_trend_detail"] = "年报对比"
 
         # 获取行业信息
         try:
@@ -414,17 +735,54 @@ def get_fundamental_data(stock_code: str) -> Dict:
                 if row['item'] == '行业':
                     result["industry"] = str(row['value'])
                     break
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning(f"获取 {stock_code} 行业信息失败: {e}")
+            # 暂无良好的fallback方案获取行业信息
+            result["industry"] = None
 
         # PE/PB：从市值和财务数据计算
-        info = ak.stock_individual_info_em(symbol=stock_code)
         total_market_cap = None
-        for _, row in info.iterrows():
-            if row['item'] == '总市值':
-                val = row['value']
-                total_market_cap = float(val) if isinstance(val, (int, float)) else None
+        current_price_val = None
+
+        # 优先尝试从 stock_individual_info_em 获取
+        try:
+            info = ak.stock_individual_info_em(symbol=stock_code)
+            for _, row in info.iterrows():
+                if row['item'] == '总市值':
+                    val = row['value']
+                    total_market_cap = float(val) if isinstance(val, (int, float)) else None
+                elif row['item'] == '最新':
+                    current_price_val = float(row['value']) if isinstance(row['value'], (int, float)) else None
+        except Exception as e:
+            log.warning(f"获取 {stock_code} 基本信息失败: {e}")
         
+        # Fallback: 用 get_market_cap 的日K线估算结果
+        if total_market_cap is None and market_cap_yi is not None:
+            total_market_cap = market_cap_yi * 1e8  # 亿元 → 元
+            log.info(f"  使用 get_market_cap fallback 市值: {market_cap_yi:.2f}亿元")
+
+            # Fallback: 尝试使用 stock_a_indicator_lg 获取PE/PB指标
+            try:
+                log.info(f"  尝试使用 stock_a_indicator_lg 获取 {stock_code} 估值指标")
+                indicator_df = ak.stock_a_indicator_lg(symbol=stock_code)
+                if indicator_df is not None and not indicator_df.empty:
+                    latest_indicator = indicator_df.iloc[-1]
+                    # stock_a_indicator_lg 可能直接提供PE/PB
+                    pe_from_lg = latest_indicator.get('pe', None) or latest_indicator.get('PE', None) or latest_indicator.get('市盈率', None)
+                    pb_from_lg = latest_indicator.get('pb', None) or latest_indicator.get('PB', None) or latest_indicator.get('市净率', None)
+
+                    if pe_from_lg and pd.notna(pe_from_lg) and pe_from_lg > 0:
+                        result["pe_ratio"] = round(float(pe_from_lg), 2)
+                        result["pe_type"] = "LG源"
+                        log.info(f"    从LG源获取PE: {result['pe_ratio']}")
+
+                    if pb_from_lg and pd.notna(pb_from_lg) and pb_from_lg > 0:
+                        result["pb_ratio"] = round(float(pb_from_lg), 2)
+                        log.info(f"    从LG源获取PB: {result['pb_ratio']}")
+
+            except Exception as lg_e:
+                log.warning(f"  stock_a_indicator_lg 也失败: {lg_e}")
+
         # PE-TTM = 总市值 / 最近4个季度扣非净利润（陈老师要求：排除一次性损益）
         # 优先用扣非净利润，失败则回退到净利润，再失败用年报
         ttm_profit = None
@@ -434,7 +792,7 @@ def get_fundamental_data(stock_code: str) -> Dict:
             if fin_q is not None and not fin_q.empty:
                 latest_q = fin_q.iloc[-1]
                 latest_period = str(latest_q.get("报告期", ""))
-                
+
                 # 优先扣非净利润，回退到净利润
                 for profit_col, label in [("扣非净利润", "扣非TTM"), ("净利润", "TTM")]:
                     if ttm_profit is not None:
@@ -442,7 +800,7 @@ def get_fundamental_data(stock_code: str) -> Dict:
                     latest_q_profit = parse_amount(latest_q.get(profit_col))
                     if latest_q_profit is None:
                         continue
-                    
+
                     if latest_period.endswith("12-31"):
                         ttm_profit = latest_q_profit
                         ttm_type = label
@@ -461,27 +819,44 @@ def get_fundamental_data(stock_code: str) -> Dict:
                             ttm_type = label
         except Exception as e:
             log.debug(f"TTM计算失败: {e}")
-        
+
         if total_market_cap and ttm_profit and ttm_profit > 0:
             result["pe_ratio"] = round(total_market_cap / 1e8 / ttm_profit, 2)
             result["pe_type"] = ttm_type
         elif total_market_cap and result["net_profit"] and result["net_profit"] > 0:
             result["pe_ratio"] = round(total_market_cap / 1e8 / result["net_profit"], 2)
             result["pe_type"] = "静态"
-        
-        # PB: 用每股净资产计算
-        try:
-            bvps = float(str(fin.iloc[-1].get("每股净资产", "0")).replace(',', ''))
-        except:
-            bvps = None
-        eps_val = bvps
-        if eps_val and eps_val > 0:
-            current_price_val = None
-            for _, row in info.iterrows():
-                if row['item'] == '最新':
-                    current_price_val = float(row['value']) if isinstance(row['value'], (int, float)) else None
-            if current_price_val:
-                result["pb_ratio"] = round(current_price_val / eps_val, 2)
+
+        # PS(市销率) = 市值 / TTM营收（用于困境反转估值）
+        if total_market_cap and result.get("revenue") and result["revenue"] > 0:
+            result["ps_ratio"] = round(total_market_cap / 1e8 / result["revenue"], 2)
+            result["market_cap_yi_val"] = round(total_market_cap / 1e8, 2)
+
+        # PB: 用每股净资产计算 (如果LG源没有提供PB的话)
+        if result.get("pb_ratio") is None:
+            try:
+                bvps = float(str(fin.iloc[-1].get("每股净资产", "0")).replace(',', ''))
+            except:
+                bvps = None
+
+            if bvps and bvps > 0 and current_price_val:
+                result["pb_ratio"] = round(current_price_val / bvps, 2)
+            elif bvps and bvps > 0:
+                # 如果没有current_price_val，尝试从日K数据获取
+                try:
+                    if stock_code.startswith(('0', '3')):
+                        symbol = f'sz{stock_code}'
+                    else:
+                        symbol = f'sh{stock_code}'
+                    end_date = datetime.now().strftime("%Y%m%d")
+                    start_date = (datetime.now() - timedelta(days=5)).strftime("%Y%m%d")
+                    price_df = ak.stock_zh_a_daily(symbol=symbol, start_date=start_date, end_date=end_date)
+                    if price_df is not None and not price_df.empty:
+                        latest_price = price_df.iloc[-1]['close']
+                        result["pb_ratio"] = round(latest_price / bvps, 2)
+                        log.info(f"    通过日K数据计算PB: {result['pb_ratio']}")
+                except Exception as price_e:
+                    log.warning(f"  获取最新价格计算PB失败: {price_e}")
 
         log.info(f"  {stock_code} 基本面: 营收={result['revenue']}, 净利={result['net_profit']}, ROE={result['roe']}, PE={result['pe_ratio']}")
     except Exception as e:
@@ -491,7 +866,7 @@ def get_fundamental_data(stock_code: str) -> Dict:
 
 def get_latest_announcements(stock_code: str) -> Dict:
     """获取最新公告并按关键词分类
-    
+
     返回: {
         "announcements": [{"date": str, "title": str, "category": str}],
         "signals": {"has_buyback": bool, "has_insider_sell": bool, "has_lawsuit": bool, "has_earnings_forecast": bool},
@@ -502,21 +877,21 @@ def get_latest_announcements(stock_code: str) -> Dict:
         # 计算查询时间范围（最近3个月）
         end_date = datetime.now().strftime("%Y%m%d")
         start_date = (datetime.now() - timedelta(days=90)).strftime("%Y%m%d")
-        
+
         # 获取公告数据
         df = ak.stock_zh_a_disclosure_report_cninfo(
             symbol=stock_code,
             start_date=start_date,
             end_date=end_date
         )
-        
+
         if df is None or df.empty:
             return {
                 "announcements": [],
                 "signals": {"has_buyback": False, "has_insider_sell": False, "has_lawsuit": False, "has_earnings_forecast": False},
                 "summary": "暂无公告"
             }
-        
+
         # 关键词分类映射
         category_keywords = {
             "业绩": ["业绩快报", "业绩预告", "年报", "中报", "季报", "盈利预告"],
@@ -526,23 +901,23 @@ def get_latest_announcements(stock_code: str) -> Dict:
             "风险": ["处罚", "诉讼", "仲裁", "调查", "立案", "违规", "风险"],
             "重组": ["重大资产重组", "并购", "收购", "兼并", "注入", "置换"]
         }
-        
+
         announcements = []
         signals = {"has_buyback": False, "has_insider_sell": False, "has_lawsuit": False, "has_earnings_forecast": False}
-        
+
         for _, row in df.iterrows():
             title = str(row.get('公告标题', ''))
             # 去掉HTML标签
             title = re.sub(r'<[^>]+>', '', title)
             date = str(row.get('公告时间', ''))
-            
+
             # 分类标记
             category = "其他"
             for cat, keywords in category_keywords.items():
                 if any(keyword in title for keyword in keywords):
                     category = cat
                     break
-            
+
             # 更新信号
             if category == "回购" or any(kw in title for kw in ["回购", "股份回购"]):
                 signals["has_buyback"] = True
@@ -552,16 +927,16 @@ def get_latest_announcements(stock_code: str) -> Dict:
                 signals["has_lawsuit"] = True
             elif category == "业绩" or any(kw in title for kw in ["业绩预告", "业绩快报"]):
                 signals["has_earnings_forecast"] = True
-            
+
             announcements.append({
                 "date": date,
                 "title": title,
                 "category": category
             })
-        
+
         # 按日期排序，最新的在前
         announcements.sort(key=lambda x: x["date"], reverse=True)
-        
+
         # 生成一句话摘要
         summary_parts = []
         if signals["has_buyback"]:
@@ -572,19 +947,19 @@ def get_latest_announcements(stock_code: str) -> Dict:
             summary_parts.append("有风险")
         if signals["has_earnings_forecast"]:
             summary_parts.append("有业绩预告")
-        
+
         if not summary_parts:
             summary = f"近3个月共{len(announcements)}条公告，无重要信号"
         else:
             summary = f"近3个月{len(announcements)}条公告：{'/'.join(summary_parts)}"
-        
+
         log.info(f"获取 {stock_code} 公告监控: {len(announcements)}条，信号={summary_parts}")
         return {
             "announcements": announcements[:10],  # 只保留最新10条
             "signals": signals,
             "summary": summary
         }
-        
+
     except Exception as e:
         log.warning(f"获取 {stock_code} 公告监控失败: {e}")
         return {
@@ -600,38 +975,38 @@ def get_holding_announcements(stock_code: str) -> List[Dict]:
         # 计算查询时间范围（最近3个月）
         end_date = datetime.now().strftime("%Y%m%d")
         start_date = (datetime.now() - timedelta(days=QUERY_MONTHS * 30)).strftime("%Y%m%d")
-        
+
         # 使用akshare获取增持公告
         df = ak.stock_zh_a_disclosure_report_cninfo(
-            symbol=stock_code, 
+            symbol=stock_code,
             keyword='增持',
             start_date=start_date,
             end_date=end_date
         )
-        
+
         if df is None or df.empty:
             return []
-        
+
         # 检查必要的列是否存在
         required_cols = ['公告标题', '公告时间']
         if not all(col in df.columns for col in required_cols):
             log.warning(f"获取 {stock_code} 增持公告: 数据格式异常，列名: {df.columns.tolist()}")
             return []
-        
+
         # 提取公告信息
         announcements = []
         for _, row in df.iterrows():
             title = str(row.get('公告标题', ''))
             # 去掉HTML标签
             title = re.sub(r'<[^>]+>', '', title)
-            
+
             announcement = {
                 'title': title,
                 'date': str(row.get('公告时间', '')),
                 'link': str(row.get('公告链接', ''))
             }
             announcements.append(announcement)
-        
+
         log.info(f"获取 {stock_code} 增持公告: {len(announcements)} 条")
         return announcements
     except Exception as e:
@@ -640,23 +1015,26 @@ def get_holding_announcements(stock_code: str) -> List[Dict]:
 
 
 def generate_sell_signals(price_data: Dict, fundamental_data: Dict, announcement_data: Dict,
-                          valuation_pass: bool = False, ma_status: str = "") -> List[Dict]:
+                          valuation_pass: bool = False, ma_status: str = "", avg_holding_price: float = None) -> List[Dict]:
     """生成卖出/持有信号
-    
-    逻辑分两个阶段：
-    - 建仓期（三重过滤通过，刚买入）：止损看MA60，给MA20/30空间整理
-    - 持有期（已站上MA20后）：跌破MA20减仓，跌破MA30清仓
-    
+
+    逻辑：以高管增持均价为锚点，结合基本面和固定止损
+    - 跌破高管增持均价 → 警告（内部人都套了）
+    - 回撤>15% → 止损（风控底线）
+    - 基本面恶化 → 卖出
+    - 高管减持 → 强烈卖出
+
     参数:
         price_data: 价格技术数据
         fundamental_data: 基本面数据
         announcement_data: 公告数据
         valuation_pass: 估值是否通过三重过滤
-        ma_status: 均线状态描述
+        ma_status: 均线状态描述（仅作参考显示）
+        avg_holding_price: 高管增持加权均价
     返回: [{"signal": str, "level": "danger"|"warning"|"info", "action": str}]
     """
     signals = []
-    
+
     try:
         current_price = price_data.get('current_price')
         ma10 = price_data.get('ma10')
@@ -670,14 +1048,7 @@ def generate_sell_signals(price_data: Dict, fundamental_data: Dict, announcement
         has_insider_sell = ann_signals.get('has_insider_sell', False)
         has_lawsuit = ann_signals.get('has_lawsuit', False)
         has_buyback = ann_signals.get('has_buyback', False)
-        
-        # 判断是否处于多头排列（持有期）还是整理期（建仓期）
-        is_bullish = False
-        if current_price and ma10 and ma20 and ma30:
-            is_bullish = current_price > ma10 > ma20 > ma30
-        
-        is_above_ma20 = current_price > ma20 if (current_price and ma20) else False
-        
+
         # === 亏损股直接标记 ===
         if net_profit is not None and net_profit < 0:
             signals.append({
@@ -685,52 +1056,29 @@ def generate_sell_signals(price_data: Dict, fundamental_data: Dict, announcement
                 "level": "danger",
                 "action": "亏损股建议清仓"
             })
-        
-        # === 均线信号（区分阶段） ===
-        if current_price and ma60 and current_price < ma60:
-            # 跌破MA60 — 无论什么阶段都是强烈卖出信号
-            signals.append({
-                "signal": "价格跌破MA60",
-                "level": "danger",
-                "action": "清仓（趋势破坏）"
-            })
-        elif is_above_ma20 and is_bullish:
-            # 多头排列中 — 持有期
-            signals.append({
-                "signal": "多头排列中",
-                "level": "info",
-                "action": "持有，跌破MA20时减仓"
-            })
-        elif current_price and ma20 and current_price < ma20 and current_price and ma30 and current_price >= ma30:
-            # 在MA20和MA30之间 — 整理区
-            if valuation_pass:
-                # 三重过滤通过的股票，这里是正常建仓/持有区间
+
+        # === 高管增持均价锚点 ===
+        if avg_holding_price and avg_holding_price > 0 and current_price:
+            insider_premium = (current_price - avg_holding_price) / avg_holding_price
+            if insider_premium < -0.15:
                 signals.append({
-                    "signal": "MA20-MA30整理区",
-                    "level": "info",
-                    "action": "建仓区间，MA60为止损线"
-                })
-            else:
-                signals.append({
-                    "signal": "价格跌破MA20",
-                    "level": "warning",
-                    "action": "观望，不宜新建仓"
-                })
-        elif current_price and ma30 and current_price < ma30 and current_price and ma60 and current_price >= ma60:
-            # 跌破MA30但还在MA60上方
-            if valuation_pass:
-                signals.append({
-                    "signal": "跌破MA30",
-                    "level": "warning",
-                    "action": "减仓至半仓，MA60为底线"
-                })
-            else:
-                signals.append({
-                    "signal": "跌破MA30",
+                    "signal": f"较高管增持均价跌{abs(insider_premium):.0%}",
                     "level": "danger",
-                    "action": "清仓"
+                    "action": "深度破发，基本面可能有问题，考虑止损"
                 })
-        
+            elif insider_premium < 0:
+                signals.append({
+                    "signal": f"较高管增持均价跌{abs(insider_premium):.0%}",
+                    "level": "warning",
+                    "action": "已破增持均价，关注基本面是否恶化"
+                })
+            else:
+                signals.append({
+                    "signal": f"较高管增持均价涨{insider_premium:.0%}",
+                    "level": "info",
+                    "action": "仍在增持均价上方，正常持有"
+                })
+
         # === 止损线：从60日最高点回撤>15% ===
         if high_60d and current_price and high_60d > 0:
             drawdown = (high_60d - current_price) / high_60d
@@ -740,37 +1088,37 @@ def generate_sell_signals(price_data: Dict, fundamental_data: Dict, announcement
                     "level": "danger",
                     "action": "触发止损（回撤>15%）"
                 })
-        
+
         # === 基本面信号 ===
         if profit_trend == "下降":
             signals.append({
                 "signal": "利润趋势下降",
-                "level": "warning",
-                "action": "注意基本面恶化"
+                "level": "danger",
+                "action": "基本面恶化，考虑减仓或清仓"
             })
-        
+
         # === 公告信号 ===
         if has_insider_sell:
             signals.append({
                 "signal": "高管/股东减持",
                 "level": "danger",
-                "action": "内部人在卖，警惕"
+                "action": "内部人在卖，强烈建议清仓"
             })
-        
+
         if has_lawsuit:
             signals.append({
                 "signal": "涉及诉讼/处罚",
                 "level": "warning",
                 "action": "关注诉讼进展"
             })
-        
+
         if has_buyback:
             signals.append({
                 "signal": "公司回购股份",
                 "level": "info",
                 "action": "利好，公司认为低估"
             })
-        
+
         # 无信号时
         if not signals:
             signals.append({
@@ -778,10 +1126,10 @@ def generate_sell_signals(price_data: Dict, fundamental_data: Dict, announcement
                 "level": "info",
                 "action": "正常持有"
             })
-        
+
         log.info(f"生成卖出信号: {len(signals)}个信号")
         return signals
-        
+
     except Exception as e:
         log.warning(f"生成卖出信号失败: {e}")
         return [{"signal": "信号生成失败", "level": "warning", "action": "无法判断"}]
@@ -792,27 +1140,27 @@ def calculate_avg_holding_price(company_data: pd.DataFrame) -> float:
     try:
         # 筛选有效的增持记录（排除减持）
         buy_records = company_data[company_data["变动数量"] > 0].copy()
-        
+
         if buy_records.empty:
             return None
-        
+
         # 计算加权平均价：sum(成交均价 * 变动数量) / sum(变动数量)
         total_value = 0
         total_shares = 0
-        
+
         for _, row in buy_records.iterrows():
             price = row.get("成交均价", 0)
             shares = row.get("变动数量", 0)
-            
+
             if pd.notna(price) and pd.notna(shares) and price > 0 and shares > 0:
                 total_value += price * shares
                 total_shares += shares
-        
+
         if total_shares > 0:
             return total_value / total_shares
         else:
             return None
-            
+
     except Exception as e:
         log.warning(f"计算加权平均价失败: {e}")
         return None
@@ -834,8 +1182,21 @@ def classify_stock_type(fundamental_data: Dict) -> str:
     industry = fundamental_data.get("industry") or ""
     prev_net_profit = fundamental_data.get("prev_net_profit")
 
-    # 亏损股
+    # 亏损股 → 分流为"困境反转"或"亏损"
     if net_profit is not None and net_profit < 0:
+        # 困境反转条件：营收高增长(>30%) + 毛利率在改善
+        rev_growth_recent = fundamental_data.get("revenue_growth_recent")  # 最新季度营收同比
+        gm_latest = fundamental_data.get("gross_margin_q_latest")
+        gm_prev = fundamental_data.get("gross_margin_q_prev")
+
+        is_rev_growing = (rev_growth_recent is not None and rev_growth_recent > 30) or \
+                         (revenue_growth > 30)
+        is_gm_improving = (gm_latest is not None and gm_prev is not None and gm_latest > gm_prev)
+
+        if is_rev_growing and is_gm_improving:
+            return "困境反转"
+        elif is_rev_growing:
+            return "困境反转"  # 营收高增长也给机会观察
         return "亏损"
 
     # 周期股：行业匹配 OR 利润波动大
@@ -869,13 +1230,55 @@ def evaluate_by_type(stock_type: str, fundamental_data: Dict) -> Tuple[bool, str
     if stock_type == "亏损":
         return False, "❌基本面不合格(亏损)"
 
+    if stock_type == "困境反转":
+        # 困境反转：用PS估值 + 营收增速 + 毛利率趋势
+        ps = fundamental_data.get("ps_ratio") or 0
+        rev_g = fundamental_data.get("revenue_growth_recent") or fundamental_data.get("revenue_growth") or 0
+        gm = fundamental_data.get("gross_margin_q_latest") or fundamental_data.get("gross_margin") or 0
+        gm_prev = fundamental_data.get("gross_margin_q_prev") or fundamental_data.get("gross_margin_prev")
+        gm_improving = gm_prev is not None and gm > gm_prev
+        debt_ratio = None  # 暂未提取，后续可加
+
+        desc_parts = [f"营收+{rev_g:.0f}%"]
+        if gm_improving:
+            desc_parts.append(f"毛利率{gm_prev:.1f}%→{gm:.1f}%↑")
+        elif gm_prev is not None:
+            desc_parts.append(f"毛利率{gm:.1f}%(未改善)")
+        if ps > 0:
+            desc_parts.append(f"PS={ps:.1f}")
+
+        desc = "，".join(desc_parts)
+
+        # 困境反转不给买入信号，只标记"观察"
+        if rev_g > 30 and gm_improving and ps < 3:
+            return False, f"👀困境反转观察({desc})——等毛利率转正或单季度盈利再进场"
+        elif rev_g > 30:
+            return False, f"👀困境反转观察({desc})——营收在增长但风险仍高"
+        else:
+            return False, f"❌困境反转条件不足({desc})"
+
     if stock_type == "成长股":
         if profit_growth > 0:
             peg = pe / profit_growth if profit_growth != 0 else 999
+            # 成长放缓预警：最新季度营收增速 vs 年度增速
+            rev_recent = fundamental_data.get("revenue_growth_recent")
+            rev_annual = fundamental_data.get("revenue_growth") or 0
+            decel_warn = ""
+            if rev_recent is not None and rev_annual > 0 and rev_recent < rev_annual * 0.5:
+                decel_warn = f"⚠️增速放缓({rev_annual:.0f}%→{rev_recent:.0f}%)"
+            elif rev_recent is not None and rev_recent < 10:
+                decel_warn = f"⚠️增速接近停滞({rev_recent:.0f}%)"
+
             if peg < 1.5:
-                return True, f"✅成长股PEG={peg:.2f}合理"
+                base = f"✅成长股PEG={peg:.2f}合理"
+                if decel_warn:
+                    return True, f"{base} {decel_warn}"
+                return True, base
             elif peg <= 2:
-                return True, f"⚠️成长股PEG={peg:.2f}偏高"
+                base = f"⚠️成长股PEG={peg:.2f}偏高"
+                if decel_warn:
+                    return False, f"{base} {decel_warn}"
+                return True, base
             else:
                 return False, f"❌成长股PEG={peg:.2f}高估"
         else:
@@ -883,23 +1286,37 @@ def evaluate_by_type(stock_type: str, fundamental_data: Dict) -> Tuple[bool, str
 
     if stock_type == "周期股":
         trend_str = f"利润{profit_trend}"
+        # 周期拐点信号
+        inflection = ""
+        if profit_trend == "上升":
+            inflection = "🟢利润拐点向上"
+        elif profit_trend == "下降":
+            inflection = "🔴利润仍在下行"
+
         if pb < 1.5:
-            return True, f"✅周期股PB={pb:.2f}低估({trend_str})"
+            desc = f"✅周期股PB={pb:.2f}低估({trend_str})"
+            if inflection:
+                desc += f" {inflection}"
+            return True, desc
         elif pb <= 2.5:
             if profit_trend == "上升":
-                return True, f"✅周期股PB={pb:.2f}合理+{trend_str}"
+                return True, f"✅周期股PB={pb:.2f}合理+{trend_str} {inflection}"
             else:
-                return False, f"⚠️周期股PB={pb:.2f}合理但{trend_str}"
+                return False, f"⚠️周期股PB={pb:.2f}合理但{trend_str} {inflection}"
         else:
-            return False, f"❌周期股PB={pb:.2f}偏高({trend_str})"
+            return False, f"❌周期股PB={pb:.2f}偏高({trend_str}) {inflection}"
 
     if stock_type == "价值股":
+        # 价值股业绩下滑预警
+        decline_warn = ""
+        if profit_trend == "下降":
+            decline_warn = " ⚠️业绩下滑中"
         if pe > 0 and pe < 15:
-            return True, f"✅价值股PE={pe:.1f}合理"
+            return True, f"✅价值股PE={pe:.1f}合理{decline_warn}"
         elif pe >= 15 and pe <= 20:
-            return True, f"⚠️价值股PE={pe:.1f}偏高"
+            return True, f"⚠️价值股PE={pe:.1f}偏高{decline_warn}"
         elif pe > 20:
-            return False, f"❌价值股PE={pe:.1f}高估"
+            return False, f"❌价值股PE={pe:.1f}高估{decline_warn}"
         else:
             return True, f"✅价值股PE数据异常，默认通过"
 
@@ -912,9 +1329,9 @@ def evaluate_by_type(stock_type: str, fundamental_data: Dict) -> Tuple[bool, str
         return True, "PE数据不足，默认通过"
 
 
-def generate_investment_opinion(stock_name: str, fundamental_data: Dict, price_data: Dict, holding_data: Dict, freshness: str = "", chase_risk: str = "", hist_stats: Dict = None, stock_type: str = "一般", valuation_pass: bool = True, valuation_desc: str = "") -> Tuple[str, str]:
+def generate_investment_opinion(stock_name: str, fundamental_data: Dict, price_data: Dict, holding_data: Dict, freshness: str = "", chase_risk: str = "", hist_stats: Dict = None, stock_type: str = "一般", valuation_pass: bool = True, valuation_desc: str = "", avg_holding_price: float = None) -> Tuple[str, str]:
     """生成有态度的投资决策分析"""
-    
+
     # 基本数据提取
     net_profit = fundamental_data.get('net_profit', 0)
     roe = fundamental_data.get('roe', 0) or 0
@@ -922,27 +1339,33 @@ def generate_investment_opinion(stock_name: str, fundamental_data: Dict, price_d
     ma_status = price_data.get('ma_status', '未知')
     bias20 = price_data.get('bias20', 0) or 0
     salary_ratio = holding_data.get('salary_ratio', 0) or 0
-    
+
     # 判断是否亏损公司
     is_loss_company = net_profit is not None and net_profit < 0
-    
+
     # 判断均线状态
     is_bullish_ma = ma_status == '多头排列'
     is_bearish_ma = ma_status == '空头排列'
-    
+
     # 判断BIAS是否合理
     is_bias_reasonable = abs(bias20) <= 10
-    
+
     # 判断估值和盈利能力
     is_high_valuation = pe_ratio > 50
     is_weak_profitability = roe < 5
-    
+
     # 判断增持信号强度
     is_strong_signal = salary_ratio > 2
     is_weak_signal = salary_ratio < 0.1 and salary_ratio > 0
-    
+
     # 生成观点
-    if is_loss_company:
+    if stock_type == "困境反转":
+        recommendation = "🟡"
+        analysis = f"困境反转股：亏损但营收在增长，高管增持可能是对反转有信心。"
+        if is_strong_signal:
+            analysis += f"高管用{salary_ratio:.1f}倍年薪增持，对反转信心强。"
+        analysis += " ⚠️等毛利率转正或单季度盈利再进场，不建议现在买入。"
+    elif is_loss_company:
         recommendation = "🔴"
         analysis = f"公司持续亏损，高管增持可能是政治任务/配合维稳，信号强度大打折扣。"
         if is_strong_signal:
@@ -970,7 +1393,7 @@ def generate_investment_opinion(stock_name: str, fundamental_data: Dict, price_d
             analysis += f"高管{salary_ratio:.1f}倍年薪增持是亮点，可适度关注。"
         else:
             analysis += "增持信号一般，建议观望。"
-    
+
     # 信号新鲜度调整
     if freshness == "🔥 新鲜":
         if recommendation == "🟡":
@@ -979,7 +1402,7 @@ def generate_investment_opinion(stock_name: str, fundamental_data: Dict, price_d
         if recommendation == "🟢":
             recommendation = "🟡"
             analysis += " 但增持信号已过期（>15天），信号衰减。"
-    
+
     # 追高风险调整
     if chase_risk == "⚠️追高风险":
         if recommendation == "🟢":
@@ -987,17 +1410,17 @@ def generate_investment_opinion(stock_name: str, fundamental_data: Dict, price_d
         analysis += " 公告后涨幅>30%，追高风险大，建议等待回调。"
     elif chase_risk == "⚡注意涨幅":
         analysis += " 公告后涨幅>20%，注意追高风险。"
-    
+
     # 额外风险提示
     warnings = []
     if is_high_valuation:
         warnings.append("估值偏高")
     if is_weak_profitability:
         warnings.append("盈利能力偏弱")
-    
+
     if warnings:
         analysis += f" ⚠️{'/'.join(warnings)}，需注意风险。"
-    
+
     # 历史持续增持加分
     if hist_stats:
         hist_waves = hist_stats.get('历史增持波次', 0)
@@ -1008,63 +1431,85 @@ def generate_investment_opinion(stock_name: str, fundamental_data: Dict, price_d
                 recommendation = "🟢"
         elif hist_waves >= 2:
             analysis += f" 🔄历史有{hist_waves}个月增持记录，非一次性行为。"
-    
-    # 择时信号（均线排列）
+
+    # 均线状态（仅作参考，不影响买卖决策）
     timing = price_data.get('timing_signal', '观望')
-    if '可买入' in timing:
-        analysis += " 📊均线多头排列，择时信号良好。"
-    elif '回避' in timing:
-        analysis += " 📊均线空头/偏空，择时不佳。"
-        if recommendation == "🟢":
-            recommendation = "🟡"  # 基本面好但技术面差，降级
-    elif '等待' in timing:
-        analysis += f" 📊均线纠缠中，等待站上MA20再入场。"
-    
+    ma_ref = price_data.get('ma_status', '')
+    if ma_ref:
+        analysis += f" 📊均线参考：{ma_ref}。"
+
     # ====== 陈老师三重过滤 ======
     # 第一重：高管增持（已满足，能进入此函数说明增持≥5人）
     filter1_pass = True
     # 第二重：基本面分类+估值
     filter2_pass = valuation_pass
-    # 第三重：均线择时
-    filter3_pass = '可买入' in timing
-    filter3_neutral = '关注' in timing or '等待' in timing
-    
+    # 第三重：增持溢价率（当前价 vs 高管增持均价）
+    current_price = price_data.get('current_price')
+    premium_rate = None
+    premium_desc = ""
+    if avg_holding_price and avg_holding_price > 0 and current_price and current_price > 0:
+        premium_rate = (current_price - avg_holding_price) / avg_holding_price
+        if premium_rate < 0:
+            filter3_pass = True
+            premium_desc = f"折价{abs(premium_rate):.0%}（比高管买得还便宜）"
+        elif premium_rate <= 0.10:
+            filter3_pass = True
+            premium_desc = f"溢价{premium_rate:.0%}（低溢价，买入区间）"
+        elif premium_rate <= 0.30:
+            filter3_pass = False
+            filter3_neutral = True
+            premium_desc = f"溢价{premium_rate:.0%}（中等溢价，仓位减半）"
+        else:
+            filter3_pass = False
+            filter3_neutral = False
+            premium_desc = f"溢价{premium_rate:.0%}（高溢价，不追）"
+    else:
+        filter3_pass = False
+        filter3_neutral = True
+        premium_desc = "无增持均价数据"
+
     filter_icons = f"{'✅' if filter1_pass else '❌'}{'✅' if filter2_pass else '❌'}{'✅' if filter3_pass else '❌'}"
-    
+
     # 三重过滤综合判断（覆盖之前的recommendation）
     if filter1_pass and filter2_pass and filter3_pass:
         recommendation = "🟢"
-        triple_result = "🟢 三重过滤通过 — 建仓30%"
-        analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{ma_status} → 建仓30%。" + analysis
+        if premium_rate is not None and premium_rate < 0:
+            triple_result = "🟢 三重过滤通过 - 折价买入，建仓30%"
+        else:
+            triple_result = "🟢 三重过滤通过 - 建仓30%"
+        analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{premium_desc} → 建仓30%。" + analysis
     elif filter1_pass and filter2_pass and filter3_neutral:
         recommendation = "🟡"
-        triple_result = "🟡 等待均线确认"
-        analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{ma_status} → 等待均线确认。" + analysis
+        if premium_rate is not None and premium_rate > 0.10:
+            triple_result = "🟡 溢价偏高，建仓15%或等回调"
+        else:
+            triple_result = "🟡 等待确认"
+        analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{premium_desc} → 谨慎建仓或等回调。" + analysis
     elif filter1_pass and filter2_pass and not filter3_pass:
-        recommendation = "🟡"
-        triple_result = "🟡 等待均线确认"
-        analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{ma_status} → 等待均线走好。" + analysis
+        recommendation = "🔴"
+        triple_result = "🔴 溢价过高，不追"
+        analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{premium_desc} → 涨太多了不追。" + analysis
     elif filter1_pass and not filter2_pass and filter3_pass:
         recommendation = "🟡"
-        triple_result = "⚠️ 技术面好但基本面存疑"
-        analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{ma_status} → 基本面存疑，观望。" + analysis
+        triple_result = "⚠️ 价格合适但基本面存疑"
+        analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{premium_desc} → 基本面存疑，观望。" + analysis
     else:
         recommendation = "🔴"
         triple_result = "🔴 不满足买入条件"
-        analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{ma_status} → 不满足买入条件。" + analysis
-    
+        analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{premium_desc} → 不满足买入条件。" + analysis
+
     # 综合操作建议
-    if recommendation == "🟢" and chase_risk in ("✅低位机会", "🟡正常"):
-        analysis += " 💰操作建议：三重过滤通过，建仓30%！"
+    if recommendation == "🟢" and premium_rate is not None and premium_rate < 0:
+        analysis += " 💰操作建议：三重过滤通过，折价买入，建仓30%！"
     elif recommendation == "🟢":
-        analysis += " 💰操作建议：趋势向好，持有待涨。"
-    elif recommendation == "🟡" and '回避' in timing:
-        analysis += " 💰操作建议：放入自选观察，等均线走好再买。"
+        analysis += " 💰操作建议：三重过滤通过，建仓30%！"
+    elif recommendation == "🟡" and premium_rate is not None and premium_rate > 0.10:
+        analysis += " 💰操作建议：溢价偏高，可建仓15%或等回调到增持均价附近。"
     elif recommendation == "🟡":
         analysis += " 💰操作建议：持有观望，等待信号完善。"
     elif recommendation == "🔴":
         analysis += " 💰操作建议：回避。"
-    
+
     return recommendation, analysis
 
 
@@ -1085,7 +1530,7 @@ def filter_data(df: pd.DataFrame) -> pd.DataFrame:
 
     # 过滤大股东增持
     filtered = filter_major_shareholders(filtered)
-    
+
     # 排除ST/退市风险股
     filtered = filter_st_stocks(filtered)
 
@@ -1105,7 +1550,7 @@ def filter_data(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     # 合并详情
-    result = filtered.merge(qualified[["证券代码", "证券简称", "增持高管人数"]], 
+    result = filtered.merge(qualified[["证券代码", "证券简称", "增持高管人数"]],
                            on=["证券代码", "证券简称"])
 
     return result
@@ -1113,29 +1558,29 @@ def filter_data(df: pd.DataFrame) -> pd.DataFrame:
 
 def get_historical_holding_stats(stock_code: str, df_all: pd.DataFrame = None) -> Dict:
     """获取某只股票的全量历史增持统计（不受QUERY_MONTHS限制）
-    
+
     返回：历史增持波次数、历史累计金额、最早增持日期、增持持续月数
     """
     try:
         if df_all is None:
             df_all = ak.stock_hold_management_detail_cninfo(symbol=QUERY_SYMBOL)
-        
+
         # 筛选该公司（兼容改名，如华新水泥→华新建材）
         company_data = df_all[df_all['证券代码'] == stock_code].copy()
-        
+
         if company_data.empty:
             return {"历史增持波次": 0, "历史累计金额": 0, "历史首次增持": None, "增持持续月数": 0}
-        
+
         # 只看竞价交易/二级市场买卖
         company_data = company_data[company_data["持股变动原因"].isin(TRADE_METHODS)]
-        
+
         # 过滤大股东
         for keyword in EXCLUDE_KEYWORDS:
             company_data = company_data[~company_data["董监高职务"].str.contains(keyword, na=False)]
-        
+
         if company_data.empty:
             return {"历史增持波次": 0, "历史累计金额": 0, "历史首次增持": None, "增持持续月数": 0}
-        
+
         # 计算累计金额
         total_amount = 0
         for _, row in company_data.iterrows():
@@ -1143,20 +1588,20 @@ def get_historical_holding_stats(stock_code: str, df_all: pd.DataFrame = None) -
             price = row.get("成交均价", 0)
             if pd.notna(qty) and pd.notna(price) and qty > 0 and price > 0:
                 total_amount += qty * price
-        
+
         # 按月份分组计算波次（有增持记录的月份数）
         company_data["截止日期"] = pd.to_datetime(company_data["截止日期"])
         months = company_data["截止日期"].dt.to_period("M").nunique()
-        
+
         # 最早和最新日期
         earliest = company_data["截止日期"].min()
         latest = company_data["截止日期"].max()
         duration_months = 0
         if pd.notna(earliest) and pd.notna(latest):
             duration_months = max(1, (latest.year - earliest.year) * 12 + latest.month - earliest.month)
-        
+
         log.info(f"  {stock_code} 历史增持: {months}个月有增持, 累计{total_amount/10000:.0f}万, 跨度{duration_months}个月")
-        
+
         return {
             "历史增持波次": months,
             "历史累计金额": total_amount,
@@ -1172,9 +1617,13 @@ def enrich_data_with_market_info(result: pd.DataFrame) -> pd.DataFrame:
     """补充市值、股价等市场信息"""
     if result.empty:
         return result
-    
+
     log.info("正在补充市场信息...")
-    
+
+    # 获取所有股票的实时行情（腾讯接口）
+    all_codes = result["证券代码"].unique().tolist()
+    realtime_prices = get_realtime_prices(all_codes)
+
     # 预加载全量增持数据（用于历史累计统计，避免重复请求）
     try:
         df_all_holding = ak.stock_hold_management_detail_cninfo(symbol=QUERY_SYMBOL)
@@ -1182,84 +1631,95 @@ def enrich_data_with_market_info(result: pd.DataFrame) -> pd.DataFrame:
     except Exception as e:
         log.warning(f"预加载全量增持数据失败: {e}")
         df_all_holding = None
-    
+
     # 按公司汇总数据
     company_summary = []
-    
+
     companies = result[["证券代码", "证券简称"]].drop_duplicates()
-    
+
     for _, company in companies.iterrows():
         stock_code = company["证券代码"]
         stock_name = company["证券简称"]
-        
+
         log.info(f"处理 {stock_code} {stock_name}")
-        
+
         # 获取该公司的增持明细
         company_data = result[result["证券代码"] == stock_code]
-        
+
         # 计算增持总金额和总股数
         total_shares = company_data["变动数量"].sum()
         avg_price = company_data["成交均价"].mean()
         total_amount = total_shares * avg_price if pd.notna(avg_price) else 0
-        
+
         # 获取最早增持日期和最新增持日期
         earliest_date = company_data["截止日期"].min()
         latest_date = company_data["截止日期"].max()
         earliest_date_str = earliest_date.strftime("%Y-%m-%d") if pd.notna(earliest_date) else None
-        
+
         # 获取市值
         market_cap = get_market_cap(stock_code)
-        
+
         # 计算增持占市值比例
         holding_ratio = (total_amount / (market_cap * 100000000)) if market_cap else 0
-        
+
         # 计算高管持仓加权平均价
         avg_holding_price = calculate_avg_holding_price(company_data)
-        
+
         # 获取股价数据（包含增持公告日涨跌幅）
         price_data = get_stock_price_data(stock_code, earliest_date_str)
-        
+
+        # 用实时行情覆盖日K线收盘价
+        if stock_code in realtime_prices:
+            rt = realtime_prices[stock_code]
+            old_price = price_data.get('current_price')
+            price_data['current_price'] = rt['price']
+            price_data['price_change_pct'] = rt['change_pct']
+            price_data['is_realtime'] = True
+            log.info(f"  {stock_code} 实时价格: {rt['price']}（日K收盘: {old_price}）")
+
         # 获取基本面数据
-        fundamental_data = get_fundamental_data(stock_code)
-        
+        fundamental_data = get_fundamental_data(stock_code, market_cap_yi=market_cap)
+
         # 获取高管薪酬数据
         exec_salaries = get_executive_salaries(stock_code)
-        
+
         # 计算增持金额/年薪比例
         salary_ratios = []
         for _, row in company_data.iterrows():
             exec_name = row.get("高管姓名", "").strip()
             qty = row.get("变动数量", 0)
             price = row.get("成交均价", 0)
-            
+
             if exec_name in exec_salaries and pd.notna(qty) and pd.notna(price) and qty > 0 and price > 0:
                 amount_wan = qty * price / 10000  # 转万元
                 exec_salary = exec_salaries[exec_name]  # 已经是万元
                 if exec_salary > 0:
                     ratio = amount_wan / exec_salary
                     salary_ratios.append(ratio)
-        
-        # 计算平均比值
-        salary_ratio = sum(salary_ratios) / len(salary_ratios) if salary_ratios else None
-        
+
+        # 计算中位数比值（比平均数更抗极端值干扰）
+        salary_ratio = sorted(salary_ratios)[len(salary_ratios) // 2] if salary_ratios else None
+        salary_ratio_avg = sum(salary_ratios) / len(salary_ratios) if salary_ratios else None
+
         # 获取历史增持累计（全量数据，不受QUERY_MONTHS限制）
         hist_stats = get_historical_holding_stats(stock_code, df_all=df_all_holding)
-        
+
         # 获取增持公告
         announcements = get_holding_announcements(stock_code)
-        
+
         # 获取公告监控数据
         announcement_data = get_latest_announcements(stock_code)
-        
-        # 陈老师三重过滤：第二重 — 基本面分类+估值（提前计算，供卖出信号使用）
+
+        # 陈老师三重过滤：第二重 - 基本面分类+估值（提前计算，供卖出信号使用）
         stock_type = classify_stock_type(fundamental_data)
         valuation_pass, valuation_desc = evaluate_by_type(stock_type, fundamental_data)
         log.info(f"  {stock_code} 三重过滤: 类型={stock_type}, 估值={valuation_desc}, 通过={valuation_pass}")
-        
+
         # 生成卖出信号
         sell_signals = generate_sell_signals(price_data, fundamental_data, announcement_data,
-                                              valuation_pass=valuation_pass, ma_status=price_data.get('ma_status', ''))
-        
+                                              valuation_pass=valuation_pass, ma_status=price_data.get('ma_status', ''),
+                                              avg_holding_price=avg_holding_price)
+
         # 信号新鲜度分级
         if pd.notna(latest_date):
             from datetime import date as date_type
@@ -1282,7 +1742,7 @@ def enrich_data_with_market_info(result: pd.DataFrame) -> pd.DataFrame:
         else:
             freshness = "💤 过期"
             freshness_score = 1
-        
+
         # 追高风险标记
         ann_return = price_data.get('announcement_return')
         if ann_return is not None and pd.notna(ann_return):
@@ -1296,17 +1756,18 @@ def enrich_data_with_market_info(result: pd.DataFrame) -> pd.DataFrame:
                 chase_risk = "🟡正常"
         else:
             chase_risk = "🟡正常"
-        
+
         # 三重过滤已在前面计算（stock_type, valuation_pass, valuation_desc）
-        
+
         # 生成投资观点
         holding_data = {'salary_ratio': salary_ratio}
         recommendation, analysis_text = generate_investment_opinion(
             stock_name, fundamental_data, price_data, holding_data,
             freshness=freshness, chase_risk=chase_risk, hist_stats=hist_stats,
-            stock_type=stock_type, valuation_pass=valuation_pass, valuation_desc=valuation_desc
+            stock_type=stock_type, valuation_pass=valuation_pass, valuation_desc=valuation_desc,
+            avg_holding_price=avg_holding_price
         )
-        
+
         company_info = {
             "证券代码": stock_code,
             "证券简称": stock_name,
@@ -1334,18 +1795,18 @@ def enrich_data_with_market_info(result: pd.DataFrame) -> pd.DataFrame:
             **price_data,
             **fundamental_data
         }
-        
+
         company_summary.append(company_info)
-    
+
     summary_df = pd.DataFrame(company_summary)
-    
+
     # 排序：信号新鲜度降序 → 增持高管人数降序 → 增持总金额降序
     if not summary_df.empty:
         summary_df = summary_df.sort_values(
             ["freshness_score", "增持高管人数", "增持总金额"],
             ascending=[False, False, False]
         ).reset_index(drop=True)
-    
+
     return summary_df
 
 
@@ -1374,16 +1835,16 @@ def mark_new_companies(summary_df: pd.DataFrame) -> pd.DataFrame:
     """标记新增公司"""
     if summary_df.empty:
         return summary_df
-    
+
     history = load_history()
     current_companies = summary_df["证券代码"].tolist()
-    
+
     # 标记新增公司
     summary_df["is_new"] = summary_df["证券代码"].apply(lambda x: x not in history)
-    
+
     # 保存当前结果
     save_history(current_companies)
-    
+
     return summary_df
 
 
@@ -1406,14 +1867,14 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
     # 标记新增公司
     if not summary_df.empty:
         summary_df = mark_new_companies(summary_df)
-    
+
     # 统一的表格样式
     table_style = "border-collapse:collapse;width:100%;margin-bottom:24px;"
     header_style = "background:#f5f5f5;color:#333;padding:10px 14px;text-align:center;font-weight:bold;font-size:13px;border-bottom:2px solid #ddd;"
     cell_style = "padding:12px 16px;border-bottom:1px solid #e0e0e0;text-align:left;font-size:14px;"
     cell_right_style = "padding:12px 16px;border-bottom:1px solid #e0e0e0;text-align:right;font-size:14px;"
     cell_center_style = "padding:12px 16px;border-bottom:1px solid #e0e0e0;text-align:center;font-size:14px;"
-    
+
     # ========== 表1：指数量价监控 ==========
     index_html = ""
     if index_data:
@@ -1422,7 +1883,7 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
             bg_color = "#f0f4f8" if idx % 2 == 0 else "white"
             change_color = "#FF0000" if item['change_pct'] > 0 else "#00AA00" if item['change_pct'] < 0 else "black"
             trend_color = "#FF0000" if item['trend'] == "上行" else "#00AA00"
-            
+
             # 量能分位颜色
             vp = item['vol_percentile']
             if vp < 20:
@@ -1434,7 +1895,20 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
             else:
                 vol_pct_color = "black"
                 vol_pct_str = f"{vp:.0f}%"
-            
+
+            # 均线排列颜色
+            ma_arr = item.get('ma_arrangement', '')
+            ma_sig = item.get('ma_signal', '')
+            if '多头' in ma_arr or '偏多' in ma_arr:
+                ma_arr_color = "#FF0000; font-weight:bold"
+            elif '空头' in ma_arr or '偏空' in ma_arr:
+                ma_arr_color = "#00AA00; font-weight:bold"
+            else:
+                ma_arr_color = "#FF8C00"
+
+            bias20_val = item.get('bias20', 0)
+            bias60_val = item.get('bias60', 0)
+
             index_rows += f"""
             <tr style="background:{bg_color};">
                 <td style="{cell_style}">{item['name']}</td>
@@ -1442,15 +1916,19 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
                 <td style="{cell_right_style};color:{change_color};">{item['change_pct']:+.2f}%</td>
                 <td style="{cell_right_style}">{item['ma20']:.3f}</td>
                 <td style="{cell_right_style}">{item['ma60']:.3f}</td>
-                <td style="{cell_center_style};color:{trend_color};">{item['trend']}</td>
+                <td style="{cell_center_style};color:{ma_arr_color};">{ma_arr}</td>
+                <td style="{cell_center_style};color:{ma_arr_color};">{ma_sig}</td>
+                <td style="{cell_right_style}">{bias20_val:+.1f}%</td>
+                <td style="{cell_right_style}">{bias60_val:+.1f}%</td>
                 <td style="{cell_right_style}">{item['vol_20']/10000:.2f}</td>
                 <td style="{cell_right_style}">{item['vol_60']/10000:.2f}</td>
                 <td style="{cell_center_style};color:{vol_pct_color};">{vol_pct_str}</td>
                 <td style="{cell_center_style}">{item['signal']}</td>
             </tr>"""
-        
+
         index_html = f"""
         <h3 style="color:#34495e;">📊 指数量价监控（陈老师量价法：地量=地价，天量=天价）</h3>
+        <p style="color:#999;font-size:11px;margin:0 0 8px 0;">💡 当前价为盘中实时价格（非交易时段为最近收盘价） | 均线/量能基于日K线计算 | 量能分位 = 最近20日均量在过去1年的百分位排名</p>
         <table style="{table_style}">
             <tr>
                 <th style="{header_style}">指数</th>
@@ -1458,7 +1936,10 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
                 <th style="{header_style}">涨跌幅</th>
                 <th style="{header_style}">MA20</th>
                 <th style="{header_style}">MA60</th>
-                <th style="{header_style}">趋势</th>
+                <th style="{header_style}">均线排列</th>
+                <th style="{header_style}">均线信号</th>
+                <th style="{header_style}">偏离MA20</th>
+                <th style="{header_style}">偏离MA60</th>
                 <th style="{header_style}">20日均量(万手)</th>
                 <th style="{header_style}">60日均量(万手)</th>
                 <th style="{header_style}">量能分位</th>
@@ -1478,16 +1959,42 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
         </body></html>
         """
 
+    # 东财行情链接
+    def eastmoney_url(code):
+        prefix = "sh" if str(code).startswith(('5', '6')) else "sz"
+        return f"https://quote.eastmoney.com/{prefix}{code}.html"
+
     # ========== 表2：高管增持筛选（合并汇总表+基本面） ==========
     screening_rows = ""
     for idx, (i, row) in enumerate(summary_df.iterrows()):
         bg_color = "#f0f4f8" if idx % 2 == 0 else "white"
         new_mark = "🆕 " if row.get("is_new", False) else ""
         market_cap_str = f"{row['公司市值']:.0f}亿" if pd.notna(row["公司市值"]) else "-"
-        amount_str = f"{row['增持总金额']:.0f}万" if pd.notna(row["增持总金额"]) else "-"
-        avg_hold_price = f"{row['高管持仓均价']:.2f}" if pd.notna(row.get('高管持仓均价')) else "-"
-        freshness = row.get('信号新鲜度', '-')
         
+        # 最近增持日期（替代信号新鲜度）
+        latest_dt = row.get('最新增持日期')
+        if pd.notna(latest_dt):
+            if isinstance(latest_dt, datetime):
+                latest_dt_str = latest_dt.strftime("%Y-%m-%d")
+            else:
+                latest_dt_str = str(latest_dt)[:10]
+        else:
+            latest_dt_str = "-"
+        
+        # 增持/年薪比（中位数）
+        sr = row.get('增持年薪比')
+        if sr and pd.notna(sr) and sr > 0:
+            salary_ratio_str = f"{sr:.1f}倍"
+            if sr >= 2:
+                sr_color = "#FF0000; font-weight:bold"  # 强信号
+            elif sr >= 0.5:
+                sr_color = "#FF8C00"  # 一般
+            else:
+                sr_color = "#999"  # 弱信号
+        else:
+            salary_ratio_str = "-"
+            sr_color = "#999"
+
         # 基本面列
         s_type = row.get('股票类型', '-')
         pe_val = row.get('pe_ratio', 0)
@@ -1497,24 +2004,37 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
         pb_ratio = f"{row.get('pb_ratio', 0):.2f}" if pd.notna(row.get('pb_ratio')) else "-"
         roe = f"{row.get('roe', 0):.1f}%" if pd.notna(row.get('roe')) else "-"
         p_trend = row.get('profit_trend', None)
+        p_trend_detail = row.get('profit_trend_detail', '')
         trend_icon = "↑上升" if p_trend == "上升" else "↓下降" if p_trend == "下降" else "→持平" if p_trend == "持平" else "-"
         trend_color = "#FF0000" if p_trend == "上升" else "#00AA00" if p_trend == "下降" else "black"
+        # 鼠标悬停显示每个季度同比详情
+        trend_title = f' title="{p_trend_detail}"' if p_trend_detail else ""
         v_desc = row.get('估值判断', '-')
-        
+
+        # 当前价和涨跌幅
+        _price = row.get('current_price')
+        _chg = row.get('price_change_pct', 0) or 0
+        price_str = f"{_price:.2f}" if pd.notna(_price) and _price else "-"
+        chg_str = f"{_chg:+.2f}%"
+        chg_color = "#FF0000" if _chg > 0 else "#00AA00" if _chg < 0 else "black"
+
         screening_rows += f"""
         <tr style="background:{bg_color};">
-            <td style="{cell_style}">{new_mark}{row['证券代码']}</td>
+            <td style="{cell_style}">{new_mark}<a href="{eastmoney_url(row['证券代码'])}" target="_blank" style="color:#3498db;text-decoration:none;">{row['证券代码']}</a></td>
             <td style="{cell_style}">{new_mark}{row['证券简称']}</td>
-            <td style="{cell_center_style}">{freshness}</td>
+            <td style="{cell_right_style}">{price_str}</td>
+            <td style="{cell_right_style};color:{chg_color};">{chg_str}</td>
+            <td style="{cell_center_style}">{latest_dt_str}</td>
             <td style="{cell_center_style};color:#e74c3c;font-weight:bold;">{row['增持高管人数']}</td>
-            <td style="{cell_right_style}">{amount_str}</td>
+            <td style="{cell_center_style};color:{sr_color};">{salary_ratio_str}</td>
             <td style="{cell_right_style}">{market_cap_str}</td>
-            <td style="{cell_right_style}">{avg_hold_price}</td>
             <td style="{cell_center_style}">{s_type}</td>
             <td style="{cell_right_style}">{pe_ratio}</td>
             <td style="{cell_right_style}">{pb_ratio}</td>
             <td style="{cell_right_style}">{roe}</td>
-            <td style="{cell_center_style};color:{trend_color};">{trend_icon}</td>
+            <td style="{cell_center_style};color:{trend_color};cursor:help;"{trend_title}>{trend_icon}</td>
+            <td style="{cell_right_style}">{f"{row.get('高管持仓均价', 0):.2f}" if pd.notna(row.get('高管持仓均价')) and row.get('高管持仓均价') else "-"}</td>
+            <td style="{cell_center_style};color:{sr_color if 'sr_color' in dir() else '#666'};">{f"{((row.get('current_price',0) - row.get('高管持仓均价',0)) / row.get('高管持仓均价',1)):+.0%}" if pd.notna(row.get('高管持仓均价')) and row.get('高管持仓均价') and pd.notna(row.get('current_price')) and row.get('current_price') else "-"}</td>
             <td style="{cell_center_style}">{v_desc}</td>
         </tr>"""
 
@@ -1523,32 +2043,45 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
     for idx, (i, row) in enumerate(summary_df.iterrows()):
         bg_color = "#f0f4f8" if idx % 2 == 0 else "white"
         new_mark = "🆕 " if row.get("is_new", False) else ""
-        
+
         price = f"{row['current_price']:.2f}" if pd.notna(row.get('current_price')) else "-"
         change_pct = row.get('price_change_pct', 0) or 0
         change = f"{change_pct:+.2f}%"
         change_color = "#FF0000" if change_pct > 0 else "#00AA00" if change_pct < 0 else "black"
-        
+
         ma10 = f"{row['ma10']:.2f}" if pd.notna(row.get('ma10')) else "-"
         ma20 = f"{row['ma20']:.2f}" if pd.notna(row.get('ma20')) else "-"
         ma60 = f"{row['ma60']:.2f}" if pd.notna(row.get('ma60')) else "-"
-        
+
         ma_status = row.get('ma_status', '-')
-        timing = row.get('timing_signal', '观望')
-        if '可买入' in str(timing):
-            timing_color = "#FF0000; font-weight:bold"
-        elif '回避' in str(timing):
-            timing_color = "#00AA00; font-weight:bold"
+
+        # 增持溢价率
+        _avg_hp = row.get('高管持仓均价')
+        _cur_p = row.get('current_price')
+        if _avg_hp and _avg_hp > 0 and _cur_p and _cur_p > 0:
+            _premium = (_cur_p - _avg_hp) / _avg_hp
+            premium_str = f"{_premium:+.0%}"
+            if _premium < 0:
+                premium_color = "#FF0000; font-weight:bold"  # 折价=红色=机会
+            elif _premium <= 0.10:
+                premium_color = "#FF0000"
+            elif _premium <= 0.30:
+                premium_color = "#FF8C00"
+            else:
+                premium_color = "#00AA00; font-weight:bold"  # 高溢价=绿色=危险
         else:
-            timing_color = "#FF8C00"
-        
+            premium_str = "-"
+            premium_color = "#666"
+
+        avg_hp_str = f"{_avg_hp:.2f}" if _avg_hp and _avg_hp > 0 else "-"
+
         # 三重过滤结果
         recommendation = row.get('投资建议', '-')
         analysis = row.get('分析观点', '')
         # 提取三重过滤图标
         triple_match = re.search(r'【三重([✅❌]+)】', str(analysis))
         triple_icons = triple_match.group(1) if triple_match else "---"
-        
+
         # 精简投资建议到一行关键信息
         advice_short = str(analysis)
         # 去掉前缀【三重...】
@@ -1562,7 +2095,7 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
             advice_short = advice_short.strip()
             if len(advice_short) > 60:
                 advice_short = advice_short[-60:]
-        
+
         tech_advice_rows += f"""
         <tr style="background:{bg_color};">
             <td style="{cell_style}">{new_mark}{row['证券代码']}</td>
@@ -1573,7 +2106,8 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
             <td style="{cell_right_style}">{ma20}</td>
             <td style="{cell_right_style}">{ma60}</td>
             <td style="{cell_center_style}">{ma_status}</td>
-            <td style="{cell_center_style};color:{timing_color};">{timing}</td>
+            <td style="{cell_right_style}">{avg_hp_str}</td>
+            <td style="{cell_center_style};color:{premium_color};">{premium_str}</td>
             <td style="{cell_center_style}">{triple_icons}</td>
             <td style="{cell_style};font-size:13px;">{recommendation} {advice_short}</td>
         </tr>"""
@@ -1586,7 +2120,7 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
         stock_name = row['证券简称']
         announcement_data = row.get('公告动态', {})
         announcements = announcement_data.get('announcements', [])
-        
+
         if not announcements:
             # 如果没有公告，显示一行"暂无公告"
             announcement_rows += f"""
@@ -1603,7 +2137,7 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
                 date_str = ann.get('date', '')[:10] if ann.get('date') else '-'
                 category = ann.get('category', '其他')
                 title = ann.get('title', '')[:40] + ('...' if len(ann.get('title', '')) > 40 else '')
-                
+
                 # 类别颜色
                 if category == "回购" or category == "增持":
                     cat_color = "#FF0000"  # 红色=利好
@@ -1613,11 +2147,11 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
                     cat_color = "#FF8C00"  # 橙色=业绩
                 else:
                     cat_color = "black"
-                
+
                 # 第一行显示股票信息，后续行留空
                 code_cell = stock_code if j == 0 else ""
                 name_cell = stock_name if j == 0 else ""
-                
+
                 announcement_rows += f"""
                 <tr style="background:{bg_color};">
                     <td style="{cell_style}">{code_cell}</td>
@@ -1634,7 +2168,7 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
         stock_code = row['证券代码']
         stock_name = row['证券简称']
         sell_signals = row.get('卖出信号', [])
-        
+
         if not sell_signals:
             # 如果没有信号，显示一行"无信号"
             sell_signal_rows += f"""
@@ -1651,7 +2185,7 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
                 signal_text = signal.get('signal', '')
                 level = signal.get('level', 'info')
                 action = signal.get('action', '')
-                
+
                 # 级别颜色
                 if level == "danger":
                     level_color = "#FF0000"  # 红色=危险
@@ -1659,11 +2193,11 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
                     level_color = "#FF8C00"  # 橙色=警告
                 else:
                     level_color = "#00AA00"  # 绿色=信息
-                
+
                 # 第一行显示股票信息，后续行留空
                 code_cell = stock_code if j == 0 else ""
                 name_cell = stock_name if j == 0 else ""
-                
+
                 sell_signal_rows += f"""
                 <tr style="background:{bg_color};">
                     <td style="{cell_style}">{code_cell}</td>
@@ -1682,7 +2216,7 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
         price = f"{row['成交均价']:.2f}" if pd.notna(row["成交均价"]) else "-"
         detail_rows += f"""
         <tr style="background:{bg_color};">
-            <td style="{cell_style}">{row['证券代码']}</td>
+            <td style="{cell_style}"><a href="{eastmoney_url(row['证券代码'])}" target="_blank" style="color:#3498db;text-decoration:none;">{row['证券代码']}</a></td>
             <td style="{cell_style}">{row['证券简称']}</td>
             <td style="{cell_style}">{row['高管姓名']}</td>
             <td style="{cell_style}">{row['董监高职务']}</td>
@@ -1692,101 +2226,130 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
             <td style="{cell_style}">{row['持股变动原因']}</td>
         </tr>"""
 
+    # ========== 生成买入信号卡片 ==========
+    signal_cards = ""
+    for idx, (i, row) in enumerate(summary_df.iterrows()):
+        recommendation = row.get('投资建议', '-')
+        analysis = str(row.get('分析观点', ''))
+        stock_code = row['证券代码']
+        stock_name = row['证券简称']
+        
+        # 提取三重过滤图标
+        triple_match = re.search(r'【三重([✅❌]+)】', analysis)
+        triple_icons = triple_match.group(1) if triple_match else "---"
+        
+        # 提取操作建议
+        op_match = re.search(r'💰操作建议：(.+?)$', analysis)
+        advice = op_match.group(1).strip() if op_match else ""
+        
+        # 卡片背景色
+        if recommendation == "🟢":
+            card_border = "#27ae60"
+            card_bg = "#f0fff4"
+        elif recommendation == "🟡":
+            card_border = "#f39c12"
+            card_bg = "#fffbf0"
+        else:
+            card_border = "#e74c3c"
+            card_bg = "#fff5f5"
+        
+        # 关键指标
+        price = f"{row['current_price']:.2f}" if pd.notna(row.get('current_price')) else "-"
+        change_pct = row.get('price_change_pct', 0) or 0
+        change_color = "#FF0000" if change_pct > 0 else "#00AA00" if change_pct < 0 else "black"
+        s_type = row.get('股票类型', '-')
+        v_desc = row.get('估值判断', '-')
+        
+        _avg_hp = row.get('高管持仓均价')
+        _cur_p = row.get('current_price')
+        if _avg_hp and _avg_hp > 0 and _cur_p and _cur_p > 0:
+            _premium = (_cur_p - _avg_hp) / _avg_hp
+            premium_str = f"{_premium:+.0%}"
+        else:
+            premium_str = "-"
+        
+        sr = row.get('增持年薪比')
+        sr_str = f"{sr:.1f}倍" if sr and pd.notna(sr) and sr > 0 else "-"
+        
+        p_trend = row.get('profit_trend', '')
+        p_detail = row.get('profit_trend_detail', '')
+        
+        pe_val = row.get('pe_ratio', 0)
+        pe_type_label = row.get('pe_type', '')
+        pe_str = f"{pe_val:.1f}({pe_type_label})" if pd.notna(pe_val) and pe_val else "-"
+        
+        signal_cards += f"""
+        <div style="border-left:4px solid {card_border};background:{card_bg};padding:12px 16px;margin-bottom:12px;border-radius:4px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                <span style="font-size:16px;font-weight:bold;">{recommendation} <a href="{eastmoney_url(stock_code)}" target="_blank" style="color:inherit;text-decoration:underline;">{stock_code}</a> {stock_name}</span>
+                <span style="font-size:14px;color:{change_color};">{price} ({change_pct:+.2f}%)</span>
+            </div>
+            <div style="font-size:13px;color:#555;line-height:1.8;">
+                三重过滤 {triple_icons} | {s_type} | PE {pe_str} | 增持/年薪 {sr_str} | 溢价率 {premium_str} | 利润{p_trend}<br>
+                <span style="color:#333;font-weight:bold;">{advice}</span>
+                {"<br><span style='color:#888;font-size:11px;'>季度同比: " + p_detail + "</span>" if p_detail else ""}
+            </div>
+        </div>"""
+
     html = f"""
     <html><body style="font-family:Arial,sans-serif;padding:20px;line-height:1.6;font-size:14px;color:#333;">
-    <h2 style="color:#2c3e50;">高管增持监控报告 - {today}</h2>
-    <p>筛选条件：排除大股东/实际控制人增持，排除ST股，同一公司 ≥{MIN_EXECUTIVES} 位普通高管增持，查询时间窗口：{QUERY_MONTHS}个月</p>
+    <h2 style="color:#2c3e50;">📡 高管增持选股信号 - {today}</h2>
+    <p style="color:#666;font-size:13px;">筛选条件：≥{MIN_EXECUTIVES}位普通高管竞价增持，排除大股东/ST，时间窗口{QUERY_MONTHS}个月 | 三重过滤：①高管增持 ②基本面估值 ③增持溢价率</p>
 
     {index_html}
 
-    <h3 style="color:#34495e;">📋 高管增持筛选（共 {len(summary_df)} 家公司）</h3>
-    <table style="{table_style}">
-        <tr>
-            <th style="{header_style}">证券代码</th>
-            <th style="{header_style}">证券简称</th>
-            <th style="{header_style}">信号新鲜度</th>
-            <th style="{header_style}">增持高管数</th>
-            <th style="{header_style}">增持总金额</th>
-            <th style="{header_style}">公司市值</th>
-            <th style="{header_style}">高管持仓均价</th>
-            <th style="{header_style}">股票类型</th>
-            <th style="{header_style}">PE</th>
-            <th style="{header_style}">PB</th>
-            <th style="{header_style}">ROE</th>
-            <th style="{header_style}">利润趋势</th>
-            <th style="{header_style}">估值判断</th>
-        </tr>
-        {screening_rows}
-    </table>
+    <h3 style="color:#34495e;">🎯 选股信号（共 {len(summary_df)} 家）</h3>
+    {signal_cards}
 
-    <h3 style="color:#34495e;">📈 技术面 + 投资建议</h3>
-    <div style="background:#f8f9fa;border-left:4px solid #3498db;padding:10px 15px;margin-bottom:15px;font-size:13px;color:#555;">
-        <b>🔍 三重过滤体系（陈老师框架）</b><br>
-        ✅/❌ 第一重：<b>高管增持</b> — ≥5位高管竞价买入（本报告所有股票已通过）<br>
-        ✅/❌ 第二重：<b>基本面估值</b> — 按股票类型分别评估（价值股看扣非PE-TTM，成长股看PEG，周期股看PB+利润趋势，亏损股直接淘汰）<br>
-        ✅/❌ 第三重：<b>均线择时</b> — MA10/20/30/60多头排列=买入，空头排列=回避
-    </div>
+    <h3 style="color:#34495e;">📋 筛选明细</h3>
     <table style="{table_style}">
         <tr>
             <th style="{header_style}">证券代码</th>
             <th style="{header_style}">证券简称</th>
             <th style="{header_style}">当前价</th>
             <th style="{header_style}">涨跌幅</th>
-            <th style="{header_style}">MA10</th>
-            <th style="{header_style}">MA20</th>
-            <th style="{header_style}">MA60</th>
-            <th style="{header_style}">均线状态</th>
-            <th style="{header_style}">操作信号</th>
-            <th style="{header_style}">三重过滤</th>
-            <th style="{header_style}">投资建议</th>
+            <th style="{header_style}">最近增持日</th>
+            <th style="{header_style}">增持高管数</th>
+            <th style="{header_style}">增持/年薪</th>
+            <th style="{header_style}">公司市值</th>
+            <th style="{header_style}">股票类型</th>
+            <th style="{header_style}">PE</th>
+            <th style="{header_style}">PB</th>
+            <th style="{header_style}">ROE</th>
+            <th style="{header_style}">利润趋势</th>
+            <th style="{header_style}">增持均价</th>
+            <th style="{header_style}">溢价率</th>
+            <th style="{header_style}">估值判断</th>
         </tr>
-        {tech_advice_rows}
+        {screening_rows}
     </table>
 
-    <h3 style="color:#34495e;">📢 最新公告动态</h3>
-    <table style="{table_style}">
-        <tr>
-            <th style="{header_style}">证券代码</th>
-            <th style="{header_style}">证券简称</th>
-            <th style="{header_style}">公告日期</th>
-            <th style="{header_style}">公告类别</th>
-            <th style="{header_style}">公告标题</th>
-        </tr>
-        {announcement_rows}
-    </table>
+    <details style="margin-top:15px;">
+        <summary style="cursor:pointer;color:#3498db;font-weight:bold;">📝 增持明细（点击展开）</summary>
+        <table style="{table_style};margin-top:8px;">
+            <tr>
+                <th style="{header_style}">证券代码</th>
+                <th style="{header_style}">证券简称</th>
+                <th style="{header_style}">高管姓名</th>
+                <th style="{header_style}">职务</th>
+                <th style="{header_style}">变动数量(股)</th>
+                <th style="{header_style}">成交均价</th>
+                <th style="{header_style}">截止日期</th>
+                <th style="{header_style}">交易方式</th>
+            </tr>
+            {detail_rows}
+        </table>
+    </details>
 
-    <h3 style="color:#34495e;">⚠️ 卖出信号监控</h3>
-    <table style="{table_style}">
-        <tr>
-            <th style="{header_style}">证券代码</th>
-            <th style="{header_style}">证券简称</th>
-            <th style="{header_style}">信号</th>
-            <th style="{header_style}">级别</th>
-            <th style="{header_style}">建议操作</th>
-        </tr>
-        {sell_signal_rows}
-    </table>
-
-    <h3 style="color:#34495e;">📝 增持明细</h3>
-    <table style="{table_style}">
-        <tr>
-            <th style="{header_style}">证券代码</th>
-            <th style="{header_style}">证券简称</th>
-            <th style="{header_style}">高管姓名</th>
-            <th style="{header_style}">职务</th>
-            <th style="{header_style}">变动数量(股)</th>
-            <th style="{header_style}">成交均价</th>
-            <th style="{header_style}">截止日期</th>
-            <th style="{header_style}">交易方式</th>
-        </tr>
-        {detail_rows}
-    </table>
-
-    <p style="color:#999;font-size:12px;margin-top:30px;">
-        数据来源：巨潮资讯网、akshare | 🆕 表示新增公司 | 红涨绿跌（A股习惯） | 自动生成于 {datetime.now().strftime('%Y-%m-%d %H:%M')}
+    <p style="color:#666;font-size:11px;margin-top:20px;line-height:1.8;">
+        📖 <b>指标说明：</b>
+        <b>增持/年薪</b> = 每位高管增持金额÷其年薪的中位数，≥2倍为强信号 |
+        <b>PE</b> = 优先取扣非PE-TTM |
+        <b>利润趋势</b> = 最近4个季度扣非净利润同比 |
+        <b>溢价率</b> = (当前价-增持均价)/增持均价
     </p>
-    <p style="color:red;font-size:12px;font-weight:bold;">
-        ⚠️ 免责声明：本报告仅供参考，不构成投资建议。股市有风险，投资需谨慎。高管增持不等于股价上涨，请结合其他因素综合判断。
+    <p style="color:#999;font-size:11px;">
+        数据来源：巨潮资讯网、akshare | 🆕 新增公司 | 自动生成于 {datetime.now().strftime('%Y-%m-%d %H:%M')}
     </p>
     </body></html>
     """
@@ -1844,56 +2407,71 @@ def add_unsubscribe_footer(html_content: str, email: str) -> str:
     return html_content
 
 
-def send_email(html_content: str):
-    """通过 QQ 邮箱 SMTP 发送 HTML 邮件给所有订阅者"""
+def send_email(html_content: str, test_mode: bool = False):
+    """通过 QQ 邮箱 SMTP 发送 HTML 邮件给所有订阅者
+
+    test_mode: 只发送给测试邮箱 1225106113@qq.com
+    """
     if not EMAIL_PASSWORD:
         log.error("未配置 SMTP 授权码，请在 config.py 中填写 EMAIL_PASSWORD")
         sys.exit(1)
 
-    subscribers = load_subscribers()
+    if test_mode:
+        subscribers = [{"email": "1225106113@qq.com", "name": "老板(测试)", "active": True}]
+        log.info("🧪 测试模式：只发送给 1225106113@qq.com")
+    else:
+        subscribers = load_subscribers()
     if not subscribers:
         log.warning("无活跃订阅者，跳过发送")
         return
 
     today = datetime.now().strftime("%Y-%m-%d")
-    
+
     try:
         with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
             server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            
+
             for sub in subscribers:
                 receiver = sub["email"]
                 name = sub.get("name", "")
-                
+
                 # 为每个收件人添加退订链接
                 personalized_html = add_unsubscribe_footer(html_content, receiver)
-                
+
                 msg = MIMEMultipart("alternative")
                 msg["Subject"] = f"高管增持监控报告 - {today}"
                 msg["From"] = EMAIL_SENDER
                 msg["To"] = receiver
                 msg.attach(MIMEText(personalized_html, "html", "utf-8"))
-                
+
                 server.sendmail(EMAIL_SENDER, receiver, msg.as_string())
                 log.info(f"邮件发送成功: {name}<{receiver}>")
-                
+
     except Exception as e:
         log.error(f"邮件发送失败: {e}")
         raise
 
 
 def main():
-    log.info("=== 高管增持监控开始 ===")
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--no-email", action="store_true", help="不发送邮件")
+    parser.add_argument("--test", action="store_true", help="测试模式：只发给 1225106113@qq.com")
+    args = parser.parse_args()
     
-    # 检查是否为交易日
-    if not is_trading_day():
+    log.info("=== 高管增持监控开始 ===")
+    if args.test:
+        log.info("🧪 测试模式")
+    
+    # 检查是否为交易日（测试模式跳过检查）
+    if not args.test and not args.no_email and not is_trading_day():
         log.info("今日非交易日，跳过运行")
         return
     
     try:
         # 获取指数量价数据
         index_data = get_index_volume_price_data()
-        
+
         # 获取数据并筛选
         df = fetch_data()
         result = filter_data(df)
@@ -1903,7 +2481,10 @@ def main():
         
         # 生成报告并发送邮件
         html = build_html_report(result, summary_df, index_data=index_data)
-        send_email(html)
+        if args.no_email:
+            log.info("--no-email 模式，跳过发送")
+        else:
+            send_email(html, test_mode=args.test)
         
     except Exception:
         log.exception("运行出错")
