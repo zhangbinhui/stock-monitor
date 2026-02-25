@@ -17,7 +17,7 @@ TRADE_METHODS = ["竞价交易", "二级市场买卖"]  # 交易方式筛选
 
 # 查询参数
 QUERY_SYMBOL = "增持"
-QUERY_MONTHS = 2  # 查询最近几个月的数据
+QUERY_MONTHS = 3  # 查询最近几个月的数据
 
 # 新增筛选参数
 # 过滤大股东关键词

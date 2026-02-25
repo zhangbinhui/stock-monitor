@@ -1049,8 +1049,9 @@ def generate_sell_signals(price_data: Dict, fundamental_data: Dict, announcement
         has_lawsuit = ann_signals.get('has_lawsuit', False)
         has_buyback = ann_signals.get('has_buyback', False)
 
-        # === 亏损股直接标记 ===
-        if net_profit is not None and net_profit < 0:
+        # === 亏损股直接标记（困境反转除外） ===
+        stock_type = fundamental_data.get("_stock_type", "")
+        if net_profit is not None and net_profit < 0 and stock_type != "困境反转":
             signals.append({
                 "signal": "公司亏损",
                 "level": "danger",
@@ -1389,6 +1390,194 @@ def evaluate_by_type(stock_type: str, fundamental_data: Dict) -> Tuple[bool, str
         return True, "PE数据不足，默认通过"
 
 
+def calc_position_and_target(stock_type: str, fundamental_data: Dict, valuation_desc: str = "", premium_rate: float = None) -> Dict:
+    """根据股票分类和基本面，计算仓位建议分级和目标涨幅估算
+    
+    仓位分级：
+    - 重仓30%：三重全过 + 周期拐点/成长PEG<1
+    - 中仓15%：三重全过 + 价值股有催化剂
+    - 轻仓5-10%：困境反转试探 / 估值一般
+    
+    目标涨幅：基于类型给预期区间
+    """
+    pe = fundamental_data.get("pe_ratio") or 0
+    pb = fundamental_data.get("pb_ratio") or 0
+    profit_trend = fundamental_data.get("profit_trend") or "持平"
+    
+    position_tier = "观望"
+    position_pct = "0%"
+    target_return = ""
+    target_logic = ""
+    
+    if stock_type == "亏损":
+        position_tier = "回避"
+        position_pct = "0%"
+        target_return = "-"
+        target_logic = "亏损股不参与"
+    
+    elif stock_type == "困境反转":
+        if "确认期" in valuation_desc:
+            position_tier = "中仓"
+            position_pct = "15-20%"
+            target_return = "50-100%"
+            target_logic = "扭亏后PE从无穷大→正常估值，弹性极大"
+        elif "试探期" in valuation_desc:
+            position_tier = "轻仓"
+            position_pct = "5-10%"
+            target_return = "30-80%"
+            target_logic = "毛利率改善→盈利预期→戴维斯双击"
+        else:
+            position_tier = "观望"
+            position_pct = "0%"
+            target_return = "-"
+            target_logic = "等确认信号"
+    
+    elif stock_type == "成长股":
+        peg = 0
+        # 优先用最新季度利润增速，回退年报增速（与evaluate_by_type一致）
+        growth = fundamental_data.get("profit_growth") or 0
+        profit_trend_detail = fundamental_data.get("profit_trend_detail", "")
+        if profit_trend_detail and profit_trend_detail != "年报对比" and ":" in profit_trend_detail:
+            try:
+                first_q = profit_trend_detail.split("|")[0].strip()
+                pct_str = first_q.split(":")[1].strip().replace("%", "").replace("+", "")
+                _latest_growth = float(pct_str)
+                if _latest_growth > 0:
+                    growth = _latest_growth
+            except:
+                pass
+        if growth > 0 and pe > 0:
+            peg = pe / growth
+        
+        if peg > 0 and peg < 1:
+            position_tier = "重仓"
+            position_pct = "25-30%"
+            target_return = f"{growth:.0f}-{growth*1.5:.0f}%"
+            target_logic = f"PEG={peg:.1f}<1，利润增速{growth:.0f}%，股价应至少跟上利润增速"
+        elif peg >= 1 and peg < 1.5:
+            position_tier = "中仓"
+            position_pct = "15-20%"
+            target_return = f"{growth*0.5:.0f}-{growth:.0f}%"
+            target_logic = f"PEG={peg:.1f}合理，赚业绩增长的钱"
+        elif peg >= 1.5 and peg <= 2:
+            position_tier = "轻仓"
+            position_pct = "5-10%"
+            target_return = "10-20%"
+            target_logic = f"PEG={peg:.1f}偏高，上涨空间有限"
+        else:
+            position_tier = "观望"
+            position_pct = "0%"
+            target_return = "-"
+            target_logic = "增速不足或PEG过高"
+    
+    elif stock_type == "周期股":
+        if profit_trend == "上升" and pb < 2:
+            position_tier = "重仓"
+            position_pct = "25-30%"
+            # 周期股利润拐点，PB从低位修复
+            target_pb = max(pb * 1.5, 2.0)
+            target_pct = (target_pb / pb - 1) * 100 if pb > 0 else 50
+            target_return = f"{target_pct:.0f}-{target_pct*1.5:.0f}%"
+            target_logic = f"利润拐点+PB={pb:.1f}低估，PB修复至{target_pb:.1f}即{target_pct:.0f}%+"
+        elif profit_trend == "上升":
+            position_tier = "中仓"
+            position_pct = "15-20%"
+            target_return = "20-40%"
+            target_logic = f"利润上行但PB={pb:.1f}不算低，赚业绩弹性"
+        elif pb < 1.5:
+            position_tier = "轻仓"
+            position_pct = "5-10%"
+            target_return = "10-30%"
+            target_logic = f"PB={pb:.1f}低估但利润未拐点，等左侧机会"
+        else:
+            position_tier = "观望"
+            position_pct = "0%"
+            target_return = "-"
+            target_logic = "利润下行+估值不低"
+    
+    elif stock_type == "价值股":
+        # 价值股目标：PE修复到合理水平
+        if pe > 0 and pe < 8:
+            # 极低PE，修复空间大
+            target_pe = min(pe * 1.5, 12)
+            target_pct = (target_pe / pe - 1) * 100
+            dividend_yield = round(100 / pe * 0.3, 1)  # 假设30%分红率
+            if profit_trend == "上升":
+                position_tier = "重仓"
+                position_pct = "25-30%"
+                target_return = f"{target_pct:.0f}-{target_pct*1.3:.0f}%"
+                target_logic = f"PE={pe:.1f}极低+业绩上行→PE修复至{target_pe:.0f}即{target_pct:.0f}%+，股息率约{dividend_yield}%"
+            else:
+                position_tier = "中仓"
+                position_pct = "15-20%"
+                target_return = f"{target_pct*0.6:.0f}-{target_pct:.0f}%"
+                target_logic = f"PE={pe:.1f}极低→PE修复至{target_pe:.0f}即{target_pct:.0f}%，股息率约{dividend_yield}%"
+        elif pe >= 8 and pe < 12:
+            target_pe = min(pe * 1.3, 15)
+            target_pct = (target_pe / pe - 1) * 100
+            if profit_trend == "上升":
+                position_tier = "中仓"
+                position_pct = "15-20%"
+                target_return = f"{target_pct:.0f}-{target_pct*1.3:.0f}%"
+                target_logic = f"PE={pe:.1f}合理+业绩上行→赚估值+业绩双升"
+            else:
+                position_tier = "轻仓"
+                position_pct = "10-15%"
+                target_return = f"10-{target_pct:.0f}%"
+                target_logic = f"PE={pe:.1f}合理，赚估值修复的钱"
+        elif pe >= 12 and pe <= 15:
+            position_tier = "轻仓"
+            position_pct = "5-10%"
+            target_return = "5-15%"
+            target_logic = f"PE={pe:.1f}偏高，上涨空间有限"
+        else:
+            position_tier = "观望"
+            position_pct = "0%"
+            target_return = "-"
+            target_logic = "PE偏高"
+    
+    else:  # 一般
+        if pe > 0 and pe < 10:
+            position_tier = "中仓"
+            position_pct = "15-20%"
+            target_pe = pe * 1.4
+            target_pct = (target_pe / pe - 1) * 100
+            target_return = f"{target_pct*0.5:.0f}-{target_pct:.0f}%"
+            target_logic = f"PE={pe:.1f}偏低，有修复空间"
+        elif pe >= 10 and pe < 20:
+            position_tier = "轻仓"
+            position_pct = "5-10%"
+            target_return = "10-20%"
+            target_logic = f"PE={pe:.1f}一般"
+        else:
+            position_tier = "观望"
+            position_pct = "0%"
+            target_return = "-"
+            target_logic = f"PE={pe:.1f}偏高"
+    
+    # 溢价率调整：高溢价降级
+    if premium_rate is not None:
+        if premium_rate > 0.30:
+            position_tier = "观望"
+            position_pct = "0%"
+            target_logic += f"（当前溢价{premium_rate:.0%}过高，不追）"
+        elif premium_rate > 0.10:
+            # 降一级
+            tier_map = {"重仓": "中仓", "中仓": "轻仓", "轻仓": "轻仓", "观望": "观望", "回避": "回避"}
+            pct_map = {"重仓": "15-20%", "中仓": "10-15%", "轻仓": "5-10%", "观望": "0%", "回避": "0%"}
+            old_tier = position_tier
+            position_tier = tier_map.get(position_tier, position_tier)
+            position_pct = pct_map.get(old_tier, position_pct)
+            target_logic += f"（溢价{premium_rate:.0%}，仓位降级）"
+    
+    return {
+        "position_tier": position_tier,  # 重仓/中仓/轻仓/观望/回避
+        "position_pct": position_pct,    # "25-30%" 
+        "target_return": target_return,  # "30-50%"
+        "target_logic": target_logic,    # 涨幅逻辑说明
+    }
+
+
 def generate_investment_opinion(stock_name: str, fundamental_data: Dict, price_data: Dict, holding_data: Dict, freshness: str = "", chase_risk: str = "", hist_stats: Dict = None, stock_type: str = "一般", valuation_pass: bool = True, valuation_desc: str = "", avg_holding_price: float = None) -> Tuple[str, str]:
     """生成有态度的投资决策分析"""
 
@@ -1544,31 +1733,33 @@ def generate_investment_opinion(stock_name: str, fundamental_data: Dict, price_d
 
     filter_icons = f"{'✅' if filter1_pass else '❌'}{'✅' if filter2_pass else '❌'}{'✅' if filter3_pass else '❌'}"
 
-    # 困境反转的仓位上限（试探10%/确认20%，不是标准30%）
+    # 困境反转标记
     is_turnaround = stock_type == "困境反转"
-    if is_turnaround and "确认期" in valuation_desc:
-        turnaround_position = "20%"
-    elif is_turnaround and "试探期" in valuation_desc:
-        turnaround_position = "10%"
-    else:
-        turnaround_position = None
 
-    # 标准仓位
-    std_position = turnaround_position or "30%"
+    # ====== 仓位分级 + 目标涨幅 ======
+    pt = calc_position_and_target(stock_type, fundamental_data, valuation_desc, premium_rate)
+    position_tier = pt["position_tier"]
+    position_pct = pt["position_pct"]
+    target_return = pt["target_return"]
+    target_logic = pt["target_logic"]
+    
+    # 用 calc_position_and_target 的结果替代硬编码仓位
+    std_position = position_pct
 
     # 三重过滤综合判断（覆盖之前的recommendation）
     if filter1_pass and filter2_pass and filter3_pass:
         recommendation = "🟢"
         if premium_rate is not None and premium_rate < 0:
-            triple_result = f"🟢 三重过滤通过 - 折价买入，建仓{std_position}"
+            triple_result = f"🟢 三重过滤通过 - 折价买入，{position_tier}{std_position}"
         else:
-            triple_result = f"🟢 三重过滤通过 - 建仓{std_position}"
-        analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{premium_desc} → 建仓{std_position}。" + analysis
+            triple_result = f"🟢 三重过滤通过 - {position_tier}{std_position}"
+        target_hint = f"，目标涨幅{target_return}" if target_return and target_return != "-" else ""
+        analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{premium_desc} → {position_tier}{std_position}{target_hint}。" + analysis
     elif filter1_pass and filter2_pass and filter3_neutral:
         recommendation = "🟡"
-        half_pos = f"{int(std_position.replace('%', '')) // 2}%"
+        # 溢价时仓位已在calc_position_and_target中降级
         if premium_rate is not None and premium_rate > 0.10:
-            triple_result = f"🟡 溢价偏高，建仓{half_pos}或等回调"
+            triple_result = f"🟡 溢价偏高，{position_tier}{std_position}或等回调"
         else:
             triple_result = "🟡 等待确认"
         analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{premium_desc} → 谨慎建仓或等回调。" + analysis
@@ -1591,15 +1782,16 @@ def generate_investment_opinion(stock_name: str, fundamental_data: Dict, price_d
         triple_result = "🔴 不满足买入条件"
         analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{premium_desc} → 不满足买入条件。" + analysis
 
-    # 综合操作建议
+    # 综合操作建议（含目标涨幅）
+    target_hint = f"目标涨幅{target_return}（{target_logic}）" if target_return and target_return != "-" else ""
     if recommendation == "🟢" and premium_rate is not None and premium_rate < 0:
-        analysis += f" 💰操作建议：三重过滤通过，折价买入，建仓{std_position}！"
+        analysis += f" 💰操作建议：三重过滤通过，折价买入，{position_tier}{std_position}！{target_hint}"
     elif recommendation == "🟢":
-        analysis += f" 💰操作建议：三重过滤通过，建仓{std_position}！"
+        analysis += f" 💰操作建议：三重过滤通过，{position_tier}{std_position}！{target_hint}"
     elif recommendation == "🟡" and premium_rate is not None and premium_rate > 0.10:
-        analysis += f" 💰操作建议：溢价偏高，可建仓{int(std_position.replace('%', '')) // 2}%或等回调到增持均价附近。"
+        analysis += f" 💰操作建议：溢价偏高，可{position_tier}{std_position}或等回调到增持均价附近。{target_hint}"
     elif recommendation == "🟡":
-        analysis += " 💰操作建议：持有观望，等待信号完善。"
+        analysis += f" 💰操作建议：持有观望，等待信号完善。{target_hint}"
     elif recommendation == "🔴":
         analysis += " 💰操作建议：回避。"
 
@@ -1808,6 +2000,8 @@ def enrich_data_with_market_info(result: pd.DataFrame) -> pd.DataFrame:
         valuation_pass, valuation_desc = evaluate_by_type(stock_type, fundamental_data)
         log.info(f"  {stock_code} 三重过滤: 类型={stock_type}, 估值={valuation_desc}, 通过={valuation_pass}")
 
+        # 传递stock_type给卖出信号（困境反转不标"亏损清仓"）
+        fundamental_data["_stock_type"] = stock_type
         # 生成卖出信号
         sell_signals = generate_sell_signals(price_data, fundamental_data, announcement_data,
                                               valuation_pass=valuation_pass, ma_status=price_data.get('ma_status', ''),
@@ -1852,6 +2046,15 @@ def enrich_data_with_market_info(result: pd.DataFrame) -> pd.DataFrame:
 
         # 三重过滤已在前面计算（stock_type, valuation_pass, valuation_desc）
 
+        # 计算溢价率（用于仓位分级）
+        _cur_price = price_data.get('current_price')
+        _premium_rate = None
+        if avg_holding_price and avg_holding_price > 0 and _cur_price and _cur_price > 0:
+            _premium_rate = (_cur_price - avg_holding_price) / avg_holding_price
+
+        # 计算仓位分级和目标涨幅
+        pos_target = calc_position_and_target(stock_type, fundamental_data, valuation_desc, _premium_rate)
+
         # 生成投资观点
         holding_data = {'salary_ratio': salary_ratio}
         recommendation, analysis_text = generate_investment_opinion(
@@ -1881,6 +2084,10 @@ def enrich_data_with_market_info(result: pd.DataFrame) -> pd.DataFrame:
             "股票类型": stock_type,
             "估值判断": valuation_desc,
             "估值通过": valuation_pass,
+            "仓位分级": pos_target["position_tier"],
+            "建议仓位": pos_target["position_pct"],
+            "目标涨幅": pos_target["target_return"],
+            "涨幅逻辑": pos_target["target_logic"],
             "增持公告": announcements,
             "公告动态": announcement_data,
             "卖出信号": sell_signals,
@@ -1893,12 +2100,19 @@ def enrich_data_with_market_info(result: pd.DataFrame) -> pd.DataFrame:
 
     summary_df = pd.DataFrame(company_summary)
 
-    # 排序：信号新鲜度降序 → 增持高管人数降序 → 增持总金额降序
+    # 排序：通过三重过滤优先 → 信号新鲜度降序 → 增持高管人数降序 → 增持总金额降序
     if not summary_df.empty:
+        # 投资建议优先级：🟢=3, 🟡=2, 🔴=1
+        def _advice_score(x):
+            if x == "🟢": return 3
+            if x == "🟡": return 2
+            return 1
+        summary_df["_advice_score"] = summary_df["投资建议"].apply(_advice_score)
         summary_df = summary_df.sort_values(
-            ["freshness_score", "增持高管人数", "增持总金额"],
-            ascending=[False, False, False]
+            ["_advice_score", "freshness_score", "增持高管人数", "增持总金额"],
+            ascending=[False, False, False, False]
         ).reset_index(drop=True)
+        summary_df.drop(columns=["_advice_score"], inplace=True)
 
     return summary_df
 
@@ -2131,176 +2345,7 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
             <td style="{cell_center_style}">{v_desc}</td>
         </tr>"""
 
-    # ========== 表3：技术面+投资建议（合并技术分析+投资决策） ==========
-    tech_advice_rows = ""
-    for idx, (i, row) in enumerate(summary_df.iterrows()):
-        bg_color = "#f0f4f8" if idx % 2 == 0 else "white"
-        new_mark = "🆕 " if row.get("is_new", False) else ""
-
-        price = f"{row['current_price']:.2f}" if pd.notna(row.get('current_price')) else "-"
-        change_pct = row.get('price_change_pct', 0) or 0
-        change = f"{change_pct:+.2f}%"
-        change_color = "#FF0000" if change_pct > 0 else "#00AA00" if change_pct < 0 else "black"
-
-        ma10 = f"{row['ma10']:.2f}" if pd.notna(row.get('ma10')) else "-"
-        ma20 = f"{row['ma20']:.2f}" if pd.notna(row.get('ma20')) else "-"
-        ma60 = f"{row['ma60']:.2f}" if pd.notna(row.get('ma60')) else "-"
-
-        ma_status = row.get('ma_status', '-')
-
-        # 增持溢价率
-        _avg_hp = row.get('高管持仓均价')
-        _cur_p = row.get('current_price')
-        if _avg_hp and _avg_hp > 0 and _cur_p and _cur_p > 0:
-            _premium = (_cur_p - _avg_hp) / _avg_hp
-            premium_str = f"{_premium:+.0%}"
-            if _premium < 0:
-                premium_color = "#FF0000; font-weight:bold"  # 折价=红色=机会
-            elif _premium <= 0.10:
-                premium_color = "#FF0000"
-            elif _premium <= 0.30:
-                premium_color = "#FF8C00"
-            else:
-                premium_color = "#00AA00; font-weight:bold"  # 高溢价=绿色=危险
-        else:
-            premium_str = "-"
-            premium_color = "#666"
-
-        avg_hp_str = f"{_avg_hp:.2f}" if _avg_hp and _avg_hp > 0 else "-"
-
-        # 三重过滤结果
-        recommendation = row.get('投资建议', '-')
-        analysis = row.get('分析观点', '')
-        # 提取三重过滤图标
-        triple_match = re.search(r'【三重([✅❌]+)】', str(analysis))
-        triple_icons = triple_match.group(1) if triple_match else "---"
-
-        # 精简投资建议到一行关键信息
-        advice_short = str(analysis)
-        # 去掉前缀【三重...】
-        advice_short = re.sub(r'【三重[✅❌]+】[^。]+。', '', advice_short)
-        # 只取第一个💰操作建议
-        op_match = re.search(r'💰操作建议：(.+?)$', advice_short)
-        if op_match:
-            advice_short = op_match.group(1).strip()
-        else:
-            # 取最后一句
-            advice_short = advice_short.strip()
-            if len(advice_short) > 60:
-                advice_short = advice_short[-60:]
-
-        tech_advice_rows += f"""
-        <tr style="background:{bg_color};">
-            <td style="{cell_style}">{new_mark}{row['证券代码']}</td>
-            <td style="{cell_style}">{new_mark}{row['证券简称']}</td>
-            <td style="{cell_right_style}">{price}</td>
-            <td style="{cell_right_style};color:{change_color};">{change}</td>
-            <td style="{cell_right_style}">{ma10}</td>
-            <td style="{cell_right_style}">{ma20}</td>
-            <td style="{cell_right_style}">{ma60}</td>
-            <td style="{cell_center_style}">{ma_status}</td>
-            <td style="{cell_right_style}">{avg_hp_str}</td>
-            <td style="{cell_center_style};color:{premium_color};">{premium_str}</td>
-            <td style="{cell_center_style}">{triple_icons}</td>
-            <td style="{cell_style};font-size:13px;">{recommendation} {advice_short}</td>
-        </tr>"""
-
-    # ========== 生成公告动态表格内容 ==========
-    announcement_rows = ""
-    for idx, (i, row) in enumerate(summary_df.iterrows()):
-        bg_color = "#f0f4f8" if idx % 2 == 0 else "white"
-        stock_code = row['证券代码']
-        stock_name = row['证券简称']
-        announcement_data = row.get('公告动态', {})
-        announcements = announcement_data.get('announcements', [])
-
-        if not announcements:
-            # 如果没有公告，显示一行"暂无公告"
-            announcement_rows += f"""
-            <tr style="background:{bg_color};">
-                <td style="{cell_style}">{stock_code}</td>
-                <td style="{cell_style}">{stock_name}</td>
-                <td style="{cell_center_style}">-</td>
-                <td style="{cell_center_style}">-</td>
-                <td style="{cell_style}">暂无公告</td>
-            </tr>"""
-        else:
-            # 显示最新3条公告
-            for j, ann in enumerate(announcements[:3]):
-                date_str = ann.get('date', '')[:10] if ann.get('date') else '-'
-                category = ann.get('category', '其他')
-                title = ann.get('title', '')[:40] + ('...' if len(ann.get('title', '')) > 40 else '')
-
-                # 类别颜色
-                if category == "回购" or category == "增持":
-                    cat_color = "#FF0000"  # 红色=利好
-                elif category == "减持" or category == "风险":
-                    cat_color = "#00AA00"  # 绿色=利空
-                elif category == "业绩":
-                    cat_color = "#FF8C00"  # 橙色=业绩
-                else:
-                    cat_color = "black"
-
-                # 第一行显示股票信息，后续行留空
-                code_cell = stock_code if j == 0 else ""
-                name_cell = stock_name if j == 0 else ""
-
-                announcement_rows += f"""
-                <tr style="background:{bg_color};">
-                    <td style="{cell_style}">{code_cell}</td>
-                    <td style="{cell_style}">{name_cell}</td>
-                    <td style="{cell_center_style}">{date_str}</td>
-                    <td style="{cell_center_style};color:{cat_color};">{category}</td>
-                    <td style="{cell_style};font-size:12px;">{title}</td>
-                </tr>"""
-
-    # ========== 生成卖出信号表格内容 ==========
-    sell_signal_rows = ""
-    for idx, (i, row) in enumerate(summary_df.iterrows()):
-        bg_color = "#f0f4f8" if idx % 2 == 0 else "white"
-        stock_code = row['证券代码']
-        stock_name = row['证券简称']
-        sell_signals = row.get('卖出信号', [])
-
-        if not sell_signals:
-            # 如果没有信号，显示一行"无信号"
-            sell_signal_rows += f"""
-            <tr style="background:{bg_color};">
-                <td style="{cell_style}">{stock_code}</td>
-                <td style="{cell_style}">{stock_name}</td>
-                <td style="{cell_center_style}">无异常信号</td>
-                <td style="{cell_center_style}">info</td>
-                <td style="{cell_center_style}">正常持有</td>
-            </tr>"""
-        else:
-            # 显示所有信号
-            for j, signal in enumerate(sell_signals):
-                signal_text = signal.get('signal', '')
-                level = signal.get('level', 'info')
-                action = signal.get('action', '')
-
-                # 级别颜色
-                if level == "danger":
-                    level_color = "#FF0000"  # 红色=危险
-                elif level == "warning":
-                    level_color = "#FF8C00"  # 橙色=警告
-                else:
-                    level_color = "#00AA00"  # 绿色=信息
-
-                # 第一行显示股票信息，后续行留空
-                code_cell = stock_code if j == 0 else ""
-                name_cell = stock_name if j == 0 else ""
-
-                sell_signal_rows += f"""
-                <tr style="background:{bg_color};">
-                    <td style="{cell_style}">{code_cell}</td>
-                    <td style="{cell_style}">{name_cell}</td>
-                    <td style="{cell_style}">{signal_text}</td>
-                    <td style="{cell_center_style};color:{level_color};">{level}</td>
-                    <td style="{cell_center_style}">{action}</td>
-                </tr>"""
-
-    # ========== 表4：增持明细 ==========
+    # ========== 增持明细 ==========
     detail_cols = ["证券代码", "证券简称", "高管姓名", "董监高职务", "变动数量", "成交均价", "截止日期", "持股变动原因"]
     detail_df = result[detail_cols].sort_values(["证券代码", "高管姓名"])
     detail_rows = ""
@@ -2321,8 +2366,13 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
 
     # ========== 生成买入信号卡片 ==========
     signal_cards = ""
+    signal_card_count = 0
     for idx, (i, row) in enumerate(summary_df.iterrows()):
         recommendation = row.get('投资建议', '-')
+        # 只展示可操作的信号（🟢买入 / 🟡观望），🔴不通过的只在筛选明细表里
+        if recommendation == "🔴":
+            continue
+        signal_card_count += 1
         analysis = str(row.get('分析观点', ''))
         stock_code = row['证券代码']
         stock_name = row['证券简称']
@@ -2371,6 +2421,20 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
         pe_type_label = row.get('pe_type', '')
         pe_str = f"{pe_val:.1f}({pe_type_label})" if pd.notna(pe_val) and pe_val else "-"
         
+        # 仓位分级和目标涨幅
+        pos_tier = row.get('仓位分级', '-')
+        pos_pct = row.get('建议仓位', '')
+        tgt_return = row.get('目标涨幅', '-')
+        tgt_logic = row.get('涨幅逻辑', '')
+        
+        # 仓位颜色
+        pos_color = "#e74c3c" if pos_tier == "重仓" else "#f39c12" if pos_tier == "中仓" else "#3498db" if pos_tier == "轻仓" else "#999"
+        
+        # 目标涨幅行（仅有效时显示）
+        target_line = ""
+        if tgt_return and tgt_return != "-":
+            target_line = f"<br>🎯 <b style='color:#e74c3c;'>目标涨幅 {tgt_return}</b>（{tgt_logic}）"
+        
         signal_cards += f"""
         <div style="border-left:4px solid {card_border};background:{card_bg};padding:12px 16px;margin-bottom:12px;border-radius:4px;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
@@ -2379,7 +2443,8 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
             </div>
             <div style="font-size:13px;color:#555;line-height:1.8;">
                 三重过滤 {triple_icons} | {s_type} | PE {pe_str} | 增持/年薪 {sr_str} | 溢价率 {premium_str} | 利润{p_trend}<br>
-                <span style="color:#333;font-weight:bold;">{advice}</span>
+                <span style="color:#333;font-weight:bold;">{advice}</span><br>
+                💼 <b style="color:{pos_color};">{pos_tier} {pos_pct}</b>{target_line}
                 {"<br><span style='color:#888;font-size:11px;'>季度同比: " + p_detail + "</span>" if p_detail else ""}
             </div>
         </div>"""
@@ -2391,7 +2456,7 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
 
     {index_html}
 
-    <h3 style="color:#34495e;">🎯 选股信号（共 {len(summary_df)} 家）</h3>
+    <h3 style="color:#34495e;">🎯 选股信号（{signal_card_count} 家可操作 / 共 {len(summary_df)} 家监控）</h3>
     {signal_cards}
 
     <h3 style="color:#34495e;">📋 筛选明细</h3>
