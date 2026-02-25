@@ -1258,31 +1258,56 @@ def evaluate_by_type(stock_type: str, fundamental_data: Dict) -> Tuple[bool, str
             return False, f"❌困境反转条件不足({desc})"
 
     if stock_type == "成长股":
-        if profit_growth > 0:
-            peg = pe / profit_growth if profit_growth != 0 else 999
-            # 成长放缓预警：最新季度营收增速 vs 年度增速
-            rev_recent = fundamental_data.get("revenue_growth_recent")
-            rev_annual = fundamental_data.get("revenue_growth") or 0
-            decel_warn = ""
-            if rev_recent is not None and rev_annual > 0 and rev_recent < rev_annual * 0.5:
-                decel_warn = f"⚠️增速放缓({rev_annual:.0f}%→{rev_recent:.0f}%)"
-            elif rev_recent is not None and rev_recent < 10:
-                decel_warn = f"⚠️增速接近停滞({rev_recent:.0f}%)"
+        # PEG优先用最新季度TTM利润增速（避免年报增速过时）
+        # revenue_growth_trend = [(period, yoy%), ...]，取最新季度的利润增速
+        profit_growth_recent = None
+        rev_growth_trend = fundamental_data.get("revenue_growth_trend")
+        if rev_growth_trend and len(rev_growth_trend) >= 1:
+            # 最新季度营收增速作为参考
+            profit_growth_recent = rev_growth_trend[0][1]
+
+        # 利润增速：优先用最新季度同比，回退到年报
+        growth_for_peg = profit_growth  # 年报增速
+        growth_source = "年报"
+
+        # 如果有季度利润趋势数据，用最新季度同比
+        profit_trend_detail = fundamental_data.get("profit_trend_detail", "")
+        if profit_trend_detail and profit_trend_detail != "年报对比":
+            # 解析 "2025-09-30:+1% | 2025-06-30:+1% | ..."
+            try:
+                first_q = profit_trend_detail.split("|")[0].strip()
+                pct_str = first_q.split(":")[1].strip().replace("%", "").replace("+", "")
+                growth_for_peg = float(pct_str)
+                growth_source = "最新季度"
+            except:
+                pass
+
+        rev_recent = fundamental_data.get("revenue_growth_recent")
+        rev_annual = fundamental_data.get("revenue_growth") or 0
+        decel_warn = ""
+        if rev_recent is not None and rev_annual > 0 and rev_recent < rev_annual * 0.5:
+            decel_warn = f"⚠️增速放缓({rev_annual:.0f}%→{rev_recent:.0f}%)"
+        elif rev_recent is not None and rev_recent < 10:
+            decel_warn = f"⚠️增速接近停滞({rev_recent:.0f}%)"
+
+        if growth_for_peg > 0:
+            peg = pe / growth_for_peg if growth_for_peg != 0 else 999
+            peg_note = f"PEG={peg:.2f}({growth_source}增速{growth_for_peg:.0f}%)"
 
             if peg < 1.5:
-                base = f"✅成长股PEG={peg:.2f}合理"
+                base = f"✅成长股{peg_note}"
                 if decel_warn:
                     return True, f"{base} {decel_warn}"
                 return True, base
             elif peg <= 2:
-                base = f"⚠️成长股PEG={peg:.2f}偏高"
+                base = f"⚠️成长股{peg_note}偏高"
                 if decel_warn:
                     return False, f"{base} {decel_warn}"
                 return True, base
             else:
-                return False, f"❌成长股PEG={peg:.2f}高估"
+                return False, f"❌成长股{peg_note}高估 {decel_warn}"
         else:
-            return False, "❌成长股利润负增长"
+            return False, f"❌成长股利润负增长({growth_source}增速{growth_for_peg:.0f}%)"
 
     if stock_type == "周期股":
         trend_str = f"利润{profit_trend}"

@@ -31,7 +31,8 @@
           "reason": "三重过滤通过",
           "insider_avg_price": 16.54,
           "stop_method": "price",
-          "stop_price": 16.38
+          "stop_price": 16.38,
+          "high_price": 19.29
         },
         {
           "code": "600873",
@@ -43,7 +44,8 @@
           "date_in": "2026-01-01",
           "reason": "回购利好",
           "stop_method": "price",
-          "stop_price": 9.13
+          "stop_price": 9.13,
+          "high_price": 11.31
         }
       ]
     }
@@ -53,6 +55,12 @@
     "max_single_position_pct": 30,
     "max_total_positions": 3,
     "etf_sell_by": "ma",
-    "stock_sell_by": "fundamental"
+    "stock_sell_by": "fundamental",
+    "trailing_stop_pct": 15,
+    "take_profit_rules": [
+      {"gain_pct": 30, "sell_pct": 33, "note": "涨30%减仓1/3锁定利润"},
+      {"gain_pct": 50, "sell_pct": 33, "note": "涨50%再减1/3"},
+      {"gain_pct": -1, "sell_pct": 0, "note": "剩余用移动止损保护"}
+    ]
   }
 }

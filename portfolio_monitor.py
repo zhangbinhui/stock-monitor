@@ -369,15 +369,19 @@ def get_stock_fundamental_signals(code: str, stock_type_hint: str = None) -> Tup
                 })
 
         # === 毛利率趋势 ===
+        # 如果利润在上升（周期反转），毛利率下滑降为info（量增价升但成本也涨的正常现象）
+        profit_is_rising = any(s.get('signal', '').startswith('🟢') for s in signals)
         gm_sorted = sorted(period_gm.items(), key=lambda x: x[0], reverse=True)
         if len(gm_sorted) >= 3:
             gm_vals = [v for _, v in gm_sorted[:3]]
             if all(gm_vals[i] < gm_vals[i+1] for i in range(len(gm_vals)-1)):
+                gm_level = "info" if profit_is_rising else "warning"
+                gm_action = "利润在涨，毛利率下滑影响有限" if profit_is_rising else "盈利能力下降"
                 signals.append({
-                    "signal": f"毛利率连续下滑({gm_vals[-1]:.1f}%→{gm_vals[0]:.1f}%)",
-                    "level": "warning",
+                    "signal": f"毛利率下滑({gm_vals[-1]:.1f}%→{gm_vals[0]:.1f}%)",
+                    "level": gm_level,
                     "detail": " | ".join(f"{p}:{v:.1f}%" for p, v in gm_sorted[:3]),
-                    "action": "盈利能力下降"
+                    "action": gm_action
                 })
 
         # === 最新季度亏损 ===
@@ -551,12 +555,18 @@ def calc_position_guide(index_data: List[Dict], current_position_pct: float, tot
         target_low, target_high = 30, 50
         market_status = "纠缠震荡"
 
+    # 检查持仓中有无待清仓标的（空头ETF等）
+    # 这个在外部传入
+    has_sell_signals = False  # 默认，外部覆盖
+
     # 建议
     target_mid = (target_low + target_high) / 2
     if current_position_pct < target_low:
         diff_yuan = (target_mid - current_position_pct) / 100 * total_assets
-        suggestion = f"仓位偏低，可加仓约{diff_yuan/10000:.1f}万（到{target_mid:.0f}%）"
+        suggestion = f"仓位偏低，建议仓位{target_low}-{target_high}%，可加仓约{diff_yuan/10000:.1f}万"
         suggestion_icon = "📈"
+        # 但如果没有选股标的，提示不要盲目加仓
+        suggestion += "\n   ⚠️ 加仓前提：有System A三重过滤通过的标的，不要为了加仓而买"
     elif current_position_pct > target_high:
         diff_yuan = (current_position_pct - target_mid) / 100 * total_assets
         suggestion = f"仓位偏高，考虑减仓约{diff_yuan/10000:.1f}万（到{target_mid:.0f}%）"
@@ -662,13 +672,46 @@ def analyze_portfolio(include_announcements=True) -> Tuple[str, List[Dict]]:
                 })
         else:
             stop_price = h.get('stop_price')
-            if stop_price:
-                if price <= stop_price:
-                    signals.append({"signal": f"‼️ 跌破止损价{stop_price}", "level": "danger", "action": "按计划止损清仓"})
-                    advice = "触及止损价，清仓"
-                    advice_icon = "🔴"
-                elif price <= stop_price * 1.05:
-                    signals.append({"signal": f"接近止损价{stop_price}（仅差{(price/stop_price-1)*100:.1f}%）", "level": "warning", "action": "密切关注"})
+            high_price = h.get('high_price') or cost
+            trailing_stop_pct = rules.get('trailing_stop_pct', 15)
+
+            # 更新历史最高价
+            if price > high_price:
+                high_price = price
+                # 写回portfolio（运行时更新）
+                h['high_price'] = high_price
+
+            # 移动止损：从最高价回撤trailing_stop_pct%
+            trailing_stop = high_price * (1 - trailing_stop_pct / 100)
+            # 取移动止损和固定止损中较高的那个（更严格）
+            effective_stop = max(trailing_stop, stop_price) if stop_price else trailing_stop
+
+            if effective_stop and price <= effective_stop:
+                if stop_price and price <= stop_price:
+                    signals.append({"signal": f"‼️ 跌破固定止损价{stop_price}", "level": "danger", "action": "按计划止损清仓"})
+                else:
+                    signals.append({"signal": f"‼️ 触发移动止损（高点{high_price:.3f}回撤{trailing_stop_pct}%→{trailing_stop:.3f}）", "level": "danger", "action": "移动止损触发，清仓"})
+                advice = "触及止损，清仓"
+                advice_icon = "🔴"
+            elif effective_stop and price <= effective_stop * 1.05:
+                signals.append({"signal": f"接近止损（固定{stop_price}/移动{trailing_stop:.3f}，仅差{(price/effective_stop-1)*100:.1f}%）", "level": "warning", "action": "密切关注"})
+
+            # === 分批止盈 ===
+            gain_pct = (price - cost) / cost * 100
+            take_profit_rules = rules.get('take_profit_rules', [])
+            for tp in take_profit_rules:
+                tp_gain = tp.get('gain_pct', -1)
+                tp_sell = tp.get('sell_pct', 0)
+                if tp_gain > 0 and gain_pct >= tp_gain and tp_sell > 0:
+                    signals.append({
+                        "signal": f"📈 盈利{gain_pct:.0f}%，达到{tp_gain}%减仓线",
+                        "level": "info",
+                        "action": f"{tp.get('note', f'减仓{tp_sell}%')}"
+                    })
+                    if advice_icon != "🔴":
+                        advice = f"盈利{gain_pct:.0f}%，可减仓{tp_sell}%锁定利润"
+                        advice_icon = "🟡"
+                    break  # 只触发最高档位
 
             # 基本面
             fund_signals, detected_type = get_stock_fundamental_signals(code)
@@ -697,13 +740,23 @@ def analyze_portfolio(include_announcements=True) -> Tuple[str, List[Dict]]:
         # 股票分类标签
         s_type = detected_type if h_type != 'etf' else "指数ETF"
 
+        # 计算移动止损价（用于显示）
+        if h_type != 'etf':
+            _high = h.get('high_price') or cost
+            if price > _high:
+                _high = price
+            _trailing = _high * (1 - rules.get('trailing_stop_pct', 15) / 100)
+        else:
+            _trailing = None
+
         results.append({
             'code': code, 'name': name, 'type': h_type,
             'shares': shares, 'cost': cost, 'price': price,
             'change_pct': change_pct, 'market_value': market_value,
             'pnl': pnl, 'pnl_pct': pnl_pct, 'position_pct': position_pct,
             'signals': signals, 'advice': advice, 'advice_icon': advice_icon,
-            'stop_price': h.get('stop_price'), 'stock_type': s_type,
+            'stop_price': h.get('stop_price'), 'trailing_stop': _trailing,
+            'stock_type': s_type,
         })
 
     # 公告扫描
@@ -740,8 +793,10 @@ def check_stop_loss_alerts() -> Optional[str]:
     """
     portfolio = load_portfolio()
     account = portfolio['accounts'][0]
+    rules = portfolio.get('rules', {})
     holdings = account['holdings']
     all_codes = [h['code'] for h in holdings]
+    trailing_stop_pct = rules.get('trailing_stop_pct', 15)
 
     rt = get_realtime_prices(all_codes)
     if not rt:
@@ -754,6 +809,8 @@ def check_stop_loss_alerts() -> Optional[str]:
         state = {'date': today, 'alerted': {}}
 
     alerts = []
+    need_save_portfolio = False
+
     for h in holdings:
         code = h['code']
         price = rt.get(code, {}).get('price')
@@ -764,19 +821,34 @@ def check_stop_loss_alerts() -> Optional[str]:
 
         if stop_method == 'price':
             stop_price = h.get('stop_price')
-            if stop_price and price <= stop_price:
+            high_price = h.get('high_price') or h['cost']
+
+            # 更新最高价
+            if price > high_price:
+                h['high_price'] = price
+                high_price = price
+                need_save_portfolio = True
+
+            # 移动止损
+            trailing_stop = high_price * (1 - trailing_stop_pct / 100)
+            effective_stop = max(trailing_stop, stop_price) if stop_price else trailing_stop
+
+            if effective_stop and price <= effective_stop:
                 alert_key = f"{code}_stop"
                 if alert_key not in state['alerted']:
-                    alerts.append(f"🚨 <b>{h['name']}({code})</b> 触及止损!\n   现价 {price} ≤ 止损价 {stop_price}\n   ➡️ 按计划止损清仓")
+                    if stop_price and price <= stop_price:
+                        alerts.append(f"🚨 <b>{h['name']}({code})</b> 跌破固定止损!\n   现价 {price} ≤ 止损 {stop_price}\n   ➡️ 按计划清仓")
+                    else:
+                        alerts.append(f"🚨 <b>{h['name']}({code})</b> 触发移动止损!\n   现价 {price}，高点 {high_price} 回撤{trailing_stop_pct}%→{trailing_stop:.3f}\n   ➡️ 移动止损清仓")
                     state['alerted'][alert_key] = datetime.now().isoformat()
-            elif stop_price and price <= stop_price * 1.03:
+            elif effective_stop and price <= effective_stop * 1.03:
                 alert_key = f"{code}_near_stop"
                 if alert_key not in state['alerted']:
-                    gap = (price / stop_price - 1) * 100
-                    alerts.append(f"⚠️ <b>{h['name']}({code})</b> 接近止损!\n   现价 {price}，距止损价 {stop_price} 仅 {gap:.1f}%\n   ➡️ 密切关注")
+                    gap = (price / effective_stop - 1) * 100
+                    alerts.append(f"⚠️ <b>{h['name']}({code})</b> 接近止损!\n   现价 {price}，止损线 {effective_stop:.3f}（仅差{gap:.1f}%）\n   ➡️ 密切关注")
                     state['alerted'][alert_key] = datetime.now().isoformat()
 
-        # ETF 硬止损（备用，比如跌幅超大）
+        # ETF 硬止损
         if h.get('type') == 'etf':
             cost = h['cost']
             pnl_pct = (price - cost) / cost * 100
@@ -785,6 +857,14 @@ def check_stop_loss_alerts() -> Optional[str]:
                 if alert_key not in state['alerted']:
                     alerts.append(f"🚨 <b>{h['name']}({code})</b> 亏损{pnl_pct:.1f}%!\n   现价 {price}，成本 {cost}\n   ➡️ 严重亏损，建议止损")
                     state['alerted'][alert_key] = datetime.now().isoformat()
+
+    # 保存更新后的最高价
+    if need_save_portfolio:
+        try:
+            with open(PORTFOLIO_FILE, 'w', encoding='utf-8') as f:
+                json.dump(portfolio, f, ensure_ascii=False, indent=2)
+        except:
+            pass
 
     if alerts:
         save_alert_state(state)
@@ -858,9 +938,16 @@ def format_report(account, results, total_mv, total_pnl, today_pnl, cash_pct, an
         lines.append(f"   仓位 {r['position_pct']:.1f}% | 市值 {r['market_value']/10000:.2f}万 | 今日 {chg_str}")
 
         stop_price = r.get('stop_price')
-        if stop_price:
-            gap = (r['price'] / stop_price - 1) * 100
-            lines.append(f"   止损价 {stop_price}（距离 {gap:.1f}%）")
+        trailing_stop = r.get('trailing_stop')
+        if stop_price or trailing_stop:
+            parts = []
+            if stop_price:
+                gap = (r['price'] / stop_price - 1) * 100
+                parts.append(f"固定{stop_price}({gap:.1f}%)")
+            if trailing_stop and trailing_stop > (stop_price or 0):
+                gap_t = (r['price'] / trailing_stop - 1) * 100
+                parts.append(f"移动{trailing_stop:.3f}({gap_t:.1f}%)")
+            lines.append(f"   止损: {' | '.join(parts)}")
 
         for s in r['signals']:
             level_icon = "🔴" if s['level'] == 'danger' else "🟡" if s['level'] == 'warning' else "ℹ️"
