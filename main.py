@@ -739,7 +739,19 @@ def get_fundamental_data(stock_code: str, market_cap_yi: float = None, stock_nam
             log.warning(f"获取 {stock_code} 行业信息失败: {e}")
             result["industry"] = None
 
-        # 行业fallback：从股票名称推断（东方财富被墙时使用）
+        # 行业fallback 1: 巨潮概况接口（不走push2）
+        if not result["industry"]:
+            try:
+                profile_df = ak.stock_profile_cninfo(symbol=stock_code)
+                if profile_df is not None and not profile_df.empty:
+                    industry_val = profile_df.iloc[0].get("所属行业", "")
+                    if industry_val and str(industry_val) not in ('None', 'nan', ''):
+                        result["industry"] = str(industry_val)
+                        log.info(f"  {stock_code} 行业fallback(巨潮概况): '{result['industry']}'")
+            except Exception as e:
+                log.debug(f"巨潮概况获取行业失败: {e}")
+
+        # 行业fallback 2: 从股票名称推断（最后手段）
         if not result["industry"]:
             stock_name = result.get("stock_name") or ""
             name_industry_map = {
@@ -753,11 +765,14 @@ def get_fundamental_data(stock_code: str, market_cap_yi: float = None, stock_nam
                 "有色": "有色", "铝业": "有色", "铜业": "有色", "锂": "有色",
                 "电力": "电力", "发电": "电力", "水电": "电力",
                 "高速": "高速", "港口": "港口", "上港": "港口", "航运": "航运",
-                "医药": "医药", "制药": "医药", "药业": "医药", "生物": "医药",
+                "医药": "医药", "制药": "医药", "药业": "医药",
+                "生物制药": "医药", "生物医药": "医药", "基因": "医药",
+                "氨基酸": "化工", "味精": "化工",  # 梅花生物等发酵化工企业
                 "食品": "食品", "饮料": "食品", "乳业": "食品", "酒": "白酒",
                 "养殖": "养殖", "牧业": "养殖", "猪": "养殖",
             }
-            for kw, ind in name_industry_map.items():
+            # 长关键词优先匹配（避免"生物"误匹配"生物制药"类）
+            for kw, ind in sorted(name_industry_map.items(), key=lambda x: len(x[0]), reverse=True):
                 if kw in stock_name:
                     result["industry"] = ind
                     log.info(f"  {stock_code} 行业fallback: 从名称'{stock_name}'推断为'{ind}'")
@@ -1217,7 +1232,8 @@ def calculate_avg_holding_price(company_data: pd.DataFrame) -> float:
 # 周期行业关键词列表
 CYCLICAL_INDUSTRY_KEYWORDS = [
     "化工", "建材", "水泥", "煤炭", "钢铁", "有色", "券商", "证券",
-    "养殖", "猪", "石油", "天然气", "航运", "船舶", "电力", "发电"
+    "养殖", "猪", "石油", "天然气", "航运", "船舶", "电力", "发电",
+    "食品制造", "农副食品",  # 大宗农产品加工（味精/氨基酸等）属于周期
 ]
 
 

@@ -1203,7 +1203,11 @@ def format_report(account, results, total_mv, total_pnl, today_pnl, cash_pct, an
         for s in r['signals']:
             level_icon = "🔴" if s['level'] == 'danger' else "🟡" if s['level'] == 'warning' else "ℹ️"
             action_str = f" → {s['action']}" if s.get('action') else ""
-            lines.append(f"   {level_icon} {s['signal']}{action_str}")
+            # 去掉信号文本开头与level_icon重复的emoji
+            sig_text = s['signal']
+            if sig_text.startswith(level_icon):
+                sig_text = sig_text[len(level_icon):].lstrip()
+            lines.append(f"   {level_icon} {sig_text}{action_str}")
             if s.get('detail'):
                 lines.append(f"      <i>{s['detail']}</i>")
 
