@@ -1354,14 +1354,22 @@ def evaluate_by_type(stock_type: str, fundamental_data: Dict) -> Tuple[bool, str
         elif profit_trend == "下降":
             inflection = "🔴利润仍在下行"
 
+        # 陈老师PE陷阱警告：周期股PE越低越危险（利润高峰），PE越高/亏损反而是买点（利润谷底）
+        pe_trap_warn = ""
+        if pe > 0 and pe < 8 and profit_trend != "下降":
+            pe_trap_warn = " ⚠️PE陷阱：PE极低可能在利润高峰，警惕周期见顶"
+        elif pe > 0 and pe < 12 and profit_trend == "上升":
+            pe_trap_warn = " ℹ️注意：周期股PE低≠便宜，关注利润能否持续"
+
         if pb < 1.5:
             desc = f"✅周期股PB={pb:.2f}低估({trend_str})"
             if inflection:
                 desc += f" {inflection}"
+            desc += pe_trap_warn
             return True, desc
         elif pb <= 2.5:
             if profit_trend == "上升":
-                return True, f"✅周期股PB={pb:.2f}合理+{trend_str} {inflection}"
+                return True, f"✅周期股PB={pb:.2f}合理+{trend_str} {inflection}{pe_trap_warn}"
             else:
                 return False, f"⚠️周期股PB={pb:.2f}合理但{trend_str} {inflection}"
         else:
@@ -1381,13 +1389,15 @@ def evaluate_by_type(stock_type: str, fundamental_data: Dict) -> Tuple[bool, str
         else:
             return True, f"✅价值股PE数据异常，默认通过"
 
-    # 一般类型：简单看PE
-    if pe > 0 and pe < 30:
+    # 一般类型：收紧标准
+    if pe > 0 and pe < 15:
         return True, f"✅PE={pe:.1f}尚可"
-    elif pe >= 30:
-        return False, f"⚠️PE={pe:.1f}偏高"
+    elif pe >= 15 and pe < 20:
+        return True, f"⚠️PE={pe:.1f}，估值一般"
+    elif pe >= 20:
+        return False, f"❌PE={pe:.1f}偏高"
     else:
-        return True, "PE数据不足，默认通过"
+        return False, "PE数据不足，无法判断"
 
 
 def calc_position_and_target(stock_type: str, fundamental_data: Dict, valuation_desc: str = "", premium_rate: float = None) -> Dict:

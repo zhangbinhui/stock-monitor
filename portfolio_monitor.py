@@ -424,16 +424,7 @@ def get_stock_fundamental_signals(code: str, stock_type_hint: str = None) -> Tup
                     "action": gm_action
                 })
 
-        # === 最新季度亏损 ===
-        if sorted_periods and period_profit.get(sorted_periods[0], 0) < 0:
-            signals.append({
-                "signal": "最新季度亏损",
-                "level": "danger",
-                "detail": f"{sorted_periods[0]}: {period_profit[sorted_periods[0]]:.2f}亿",
-                "action": "亏损股建议清仓"
-            })
-
-        # === 自动分类 ===
+        # === 自动分类（提前，供后续判断使用） ===
         latest_profit = period_profit.get(sorted_periods[0]) if sorted_periods else None
         latest_rev_g_val = rev_yoy_list[0][1] if rev_yoy_list else 0
         latest_profit_g = yoy_changes[0][1] * 100 if yoy_changes else 0
@@ -449,6 +440,27 @@ def get_stock_fundamental_signals(code: str, stock_type_hint: str = None) -> Tup
             stock_type = "周期股"
         else:
             stock_type = "价值股"
+
+        # 外部手动指定的分类优先（stock_type_hint）
+        if stock_type_hint:
+            stock_type = stock_type_hint
+
+        # === 最新季度亏损（困境反转除外） ===
+        if sorted_periods and period_profit.get(sorted_periods[0], 0) < 0:
+            if stock_type == "困境反转":
+                signals.append({
+                    "signal": "最新季度仍亏损（困境反转中）",
+                    "level": "info",
+                    "detail": f"{sorted_periods[0]}: {period_profit[sorted_periods[0]]:.2f}亿",
+                    "action": "困境反转预期中的亏损，关注营收和毛利率趋势"
+                })
+            else:
+                signals.append({
+                    "signal": "最新季度亏损",
+                    "level": "danger",
+                    "detail": f"{sorted_periods[0]}: {period_profit[sorted_periods[0]]:.2f}亿",
+                    "action": "亏损股建议清仓"
+                })
 
     except Exception as e:
         log.warning(f"获取 {code} 基本面信号失败: {e}")
@@ -753,11 +765,12 @@ def analyze_portfolio(include_announcements=True) -> Tuple[str, List[Dict]]:
                         advice_icon = "🟡"
                     break  # 只触发最高档位
 
-            # 基本面
-            fund_signals, detected_type = get_stock_fundamental_signals(code)
+            # 基本面（传入手动分类，避免困境反转被误杀）
+            manual_class = h.get('stock_class')
+            fund_signals, detected_type = get_stock_fundamental_signals(code, stock_type_hint=manual_class)
             # portfolio.json中手动指定的分类优先
-            if h.get('stock_class'):
-                detected_type = h['stock_class']
+            if manual_class:
+                detected_type = manual_class
             signals.extend(fund_signals)
             for s in fund_signals:
                 if s['level'] == 'danger' and advice_icon != "🔴":
@@ -776,6 +789,55 @@ def analyze_portfolio(include_announcements=True) -> Tuple[str, List[Dict]]:
                     signals.append({"signal": f"跌破增持均价({insider_pct:.0f}%)", "level": "warning", "action": "关注基本面"})
                 else:
                     signals.append({"signal": f"高于增持均价{insider_pct:.0f}%", "level": "info", "action": ""})
+
+        # === P1: 分类专属卖出/持有逻辑（林奇：卖出理由=买入逻辑失效） ===
+        if h_type != 'etf' and detected_type:
+            _class = detected_type
+            # 从fund_signals中提取已检测到的信号
+            _has_profit_down = any('利润趋势下降' in s.get('signal', '') for s in fund_signals)
+            _has_profit_up = any('利润拐点向上' in s.get('signal', '') for s in fund_signals)
+            _has_rev_decel = any('营收增速放缓' in s.get('signal', '') for s in fund_signals)
+            _has_gm_decline = any('毛利率下滑' in s.get('signal', '') for s in fund_signals)
+            _has_q_loss = any('最新季度亏损' in s.get('signal', '') and s.get('level') == 'danger' for s in fund_signals)
+
+            if _class == "成长股":
+                # 成长股卖出逻辑：增速连续放缓 → 立即卖出（林奇：成长停滞就卖）
+                if _has_rev_decel and _has_profit_down:
+                    signals.append({"signal": "⚠️ 成长股核心逻辑失效：营收+利润双放缓", "level": "danger",
+                                    "action": "成长停滞=卖出，不等反弹"})
+                    if advice_icon != "🔴":
+                        advice = "成长逻辑失效，建议清仓"
+                        advice_icon = "🔴"
+                elif _has_rev_decel:
+                    signals.append({"signal": "成长股预警：营收增速放缓", "level": "warning",
+                                    "action": "密切关注下季度，连续放缓则清仓"})
+
+            elif _class == "周期股":
+                # 周期股卖出逻辑：利润重新转负 → 周期见顶信号
+                if _has_profit_down and not _has_profit_up:
+                    signals.append({"signal": "⚠️ 周期股预警：利润拐头向下", "level": "warning",
+                                    "action": "周期可能见顶，考虑减仓"})
+                if _has_q_loss:
+                    signals.append({"signal": "⚠️ 周期股：最新季度亏损", "level": "danger",
+                                    "action": "周期下行确认，建议清仓"})
+                    if advice_icon != "🔴":
+                        advice = "周期下行，建议清仓"
+                        advice_icon = "🔴"
+
+            elif _class == "价值股":
+                # 价值股卖出逻辑：业绩持续下滑 → PE"假便宜"
+                if _has_profit_down:
+                    signals.append({"signal": "⚠️ 价值股预警：业绩下滑，PE可能是陷阱", "level": "warning",
+                                    "action": "PE低但利润在降，检查是否假便宜"})
+
+            elif _class == "困境反转":
+                # 困境反转卖出逻辑：毛利率停止改善 → 反转失败
+                if _has_gm_decline:
+                    signals.append({"signal": "⚠️ 困境反转预警：毛利率停止改善", "level": "warning",
+                                    "action": "反转逻辑动摇，考虑减仓或清仓"})
+                elif _has_profit_up:
+                    signals.append({"signal": "🟢 困境反转进展：利润趋势改善", "level": "info",
+                                    "action": "反转逻辑验证中，继续持有"})
 
         # 股票分类标签
         s_type = detected_type if h_type != 'etf' else "指数ETF"

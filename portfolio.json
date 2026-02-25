@@ -3,9 +3,9 @@
     {
       "name": "国金25万",
       "broker": "国金证券",
-      "total_assets": 250426.92,
-      "available_cash": 131408.12,
-      "updated_at": "2026-02-25 11:03",
+      "total_assets": 249899.13,
+      "available_cash": 91536.73,
+      "updated_at": "2026-02-25 14:49",
       "holdings": [
         {
           "code": "513130",
@@ -35,6 +35,33 @@
           "high_price": 19.3
         },
         {
+          "code": "600733",
+          "name": "北汽蓝谷",
+          "shares": 2500,
+          "cost": 8.1887,
+          "type": "stock",
+          "stock_class": "困境反转",
+          "date_in": "2026-02-25",
+          "reason": "困境反转试探，营收+57%毛利率连续改善",
+          "insider_avg_price": 8.0,
+          "stop_method": "price",
+          "stop_price": 7.7,
+          "high_price": 8.19
+        },
+        {
+          "code": "601077",
+          "name": "渝农商行",
+          "shares": 3000,
+          "cost": 6.477,
+          "type": "stock",
+          "stock_class": "价值股",
+          "date_in": "2026-02-25",
+          "reason": "PE=4.9极低+高管增持，PE修复逻辑",
+          "stop_method": "price",
+          "stop_price": 5.5,
+          "high_price": 6.49
+        },
+        {
           "code": "600873",
           "name": "梅花生物",
           "shares": 3800,
@@ -45,7 +72,7 @@
           "reason": "回购利好",
           "stop_method": "price",
           "stop_price": 9.13,
-          "high_price": 11.31
+          "high_price": 11.32
         }
       ]
     }
