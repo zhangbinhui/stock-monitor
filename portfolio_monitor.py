@@ -413,6 +413,174 @@ def get_stock_fundamental_signals(code: str, stock_type_hint: str = None) -> Tup
 
 
 # ============================================================
+# 大盘仓位指引
+# ============================================================
+
+MARKET_INDICES = {
+    'sh000001': '上证指数',
+    'sh000300': '沪深300',
+    'sz399006': '创业板指',
+    'sz399673': '创业板50',
+    'sh000688': '科创50',
+}
+
+# 仓位指引表：(多头数, 偏多数) → 建议仓位区间
+POSITION_GUIDE = {
+    # 多头数>=3 → 激进
+    'bullish': (70, 80),
+    # 偏多为主 → 积极
+    'positive': (50, 70),
+    # 纠缠为主 → 中性
+    'neutral': (30, 50),
+    # 偏空为主 → 防守
+    'bearish': (15, 30),
+}
+
+
+def get_index_ma_status() -> List[Dict]:
+    """获取主要指数均线状态"""
+    results = []
+    for code, name in MARKET_INDICES.items():
+        try:
+            df = ak.stock_zh_index_daily(symbol=code)
+            if df is None or df.empty:
+                continue
+            df = df.sort_values('date').reset_index(drop=True)
+            closes = df['close'].values
+            if len(closes) < 60:
+                continue
+
+            current = closes[-1]
+            ma10 = closes[-10:].mean()
+            ma20 = closes[-20:].mean()
+            ma30 = closes[-30:].mean()
+            ma60 = closes[-60:].mean()
+            ma250 = closes[-250:].mean() if len(closes) >= 250 else None
+
+            # 均线排列
+            if current > ma10 > ma20 > ma30 > ma60:
+                arrangement = "多头排列"
+                score = 2
+                icon = "🟢"
+            elif current < ma10 < ma20 < ma30 < ma60:
+                arrangement = "空头排列"
+                score = -2
+                icon = "🔴"
+            elif current > ma20 > ma60:
+                arrangement = "偏多"
+                score = 1
+                icon = "🟢"
+            elif current < ma20 < ma60:
+                arrangement = "偏空"
+                score = -1
+                icon = "🔴"
+            elif current > ma20 and current < ma60:
+                arrangement = "反弹中"
+                score = 0
+                icon = "🟡"
+            elif current < ma20 and current > ma60:
+                arrangement = "回调中"
+                score = 0
+                icon = "🟡"
+            else:
+                arrangement = "纠缠"
+                score = 0
+                icon = "🟡"
+
+            # 用实时价格覆盖（日K不含当天）
+            try:
+                r = requests.get(f'http://qt.gtimg.cn/q={code}', timeout=5, proxies={'http': '', 'https': ''})
+                parts = r.text.split('~')
+                if len(parts) > 32:
+                    current = float(parts[3])
+                    change_pct = float(parts[32])
+                else:
+                    change_pct = 0
+            except:
+                change_pct = 0
+
+            above_ma250 = current > ma250 if ma250 else None
+            bias20 = (current - ma20) / ma20 * 100
+
+            results.append({
+                'code': code, 'name': name, 'price': current,
+                'change_pct': change_pct,
+                'arrangement': arrangement, 'score': score, 'icon': icon,
+                'bias20': bias20, 'above_ma250': above_ma250,
+                'ma20': ma20, 'ma60': ma60,
+            })
+        except Exception as e:
+            log.warning(f"获取 {name} 均线数据失败: {e}")
+
+    return results
+
+
+def calc_position_guide(index_data: List[Dict], current_position_pct: float, total_assets: float) -> Dict:
+    """
+    根据大盘指数状态计算仓位建议
+    返回: {level, target_low, target_high, suggestion, details}
+    """
+    if not index_data:
+        return {"level": "neutral", "target_low": 40, "target_high": 60, "suggestion": "数据不足，维持半仓"}
+
+    total_score = sum(d['score'] for d in index_data)
+    bullish_count = sum(1 for d in index_data if d['score'] >= 1)
+    bearish_count = sum(1 for d in index_data if d['score'] <= -1)
+    above250_count = sum(1 for d in index_data if d.get('above_ma250'))
+    n = len(index_data)
+
+    # 判断大盘整体状态
+    if bullish_count >= n * 0.6 and above250_count >= n * 0.6:
+        level = "bullish"
+        target_low, target_high = 70, 80
+        market_status = "多数偏多/多头+站上年线"
+    elif bullish_count >= n * 0.4:
+        level = "positive"
+        target_low, target_high = 50, 70
+        market_status = "偏多格局"
+    elif bearish_count >= n * 0.6:
+        level = "bearish"
+        target_low, target_high = 15, 30
+        market_status = "偏空/空头格局"
+    elif bearish_count >= n * 0.4:
+        level = "bearish"
+        target_low, target_high = 20, 40
+        market_status = "偏弱格局"
+    else:
+        level = "neutral"
+        target_low, target_high = 30, 50
+        market_status = "纠缠震荡"
+
+    # 建议
+    target_mid = (target_low + target_high) / 2
+    if current_position_pct < target_low:
+        diff_yuan = (target_mid - current_position_pct) / 100 * total_assets
+        suggestion = f"仓位偏低，可加仓约{diff_yuan/10000:.1f}万（到{target_mid:.0f}%）"
+        suggestion_icon = "📈"
+    elif current_position_pct > target_high:
+        diff_yuan = (current_position_pct - target_mid) / 100 * total_assets
+        suggestion = f"仓位偏高，考虑减仓约{diff_yuan/10000:.1f}万（到{target_mid:.0f}%）"
+        suggestion_icon = "📉"
+    else:
+        suggestion = "仓位在合理区间"
+        suggestion_icon = "✅"
+
+    return {
+        "level": level,
+        "market_status": market_status,
+        "target_low": target_low,
+        "target_high": target_high,
+        "suggestion": suggestion,
+        "suggestion_icon": suggestion_icon,
+        "bullish_count": bullish_count,
+        "bearish_count": bearish_count,
+        "above250_count": above250_count,
+        "total": n,
+        "index_data": index_data,
+    }
+
+
+# ============================================================
 # 核心分析
 # ============================================================
 
@@ -548,9 +716,16 @@ def analyze_portfolio(include_announcements=True) -> Tuple[str, List[Dict]]:
             log.info(f"公告扫描完成: {len(ann_alerts)} 条提醒")
 
     cash_pct = available / total_assets * 100
+    position_pct = total_market_value / total_assets * 100
     today_pnl = sum(r['price'] * r['shares'] * r['change_pct'] / 100 for r in results)
 
-    report = format_report(account, results, total_market_value, total_pnl, today_pnl, cash_pct, ann_alerts)
+    # 大盘仓位指引
+    log.info("检测大盘指数...")
+    index_data = get_index_ma_status()
+    pos_guide = calc_position_guide(index_data, position_pct, total_assets)
+    log.info(f"大盘状态: {pos_guide['market_status']}，建议仓位{pos_guide['target_low']}-{pos_guide['target_high']}%")
+
+    report = format_report(account, results, total_market_value, total_pnl, today_pnl, cash_pct, ann_alerts, pos_guide)
     return report, ann_alerts
 
 
@@ -624,22 +799,42 @@ def check_stop_loss_alerts() -> Optional[str]:
 # 报告格式化
 # ============================================================
 
-def format_report(account, results, total_mv, total_pnl, today_pnl, cash_pct, ann_alerts=None) -> str:
+def format_report(account, results, total_mv, total_pnl, today_pnl, cash_pct, ann_alerts=None, pos_guide=None) -> str:
     """生成持仓日报（HTML格式，兼容Telegram和邮件）"""
     now = datetime.now()
     total_assets = account['total_assets']
+    position_pct = total_mv / total_assets * 100
 
     lines = []
     lines.append(f"📊 <b>持仓日报</b> {now.strftime('%Y-%m-%d %H:%M')}")
     lines.append("")
     lines.append(f"💰 <b>{account['name']}</b> 总资产 {total_assets/10000:.2f}万")
-    lines.append(f"   持仓 {total_mv/10000:.2f}万 | 现金 {account['available_cash']/10000:.2f}万({cash_pct:.0f}%)")
+    lines.append(f"   持仓 {total_mv/10000:.2f}万({position_pct:.0f}%) | 现金 {account['available_cash']/10000:.2f}万({cash_pct:.0f}%)")
 
     today_icon = "📈" if today_pnl >= 0 else "📉"
     pnl_dir = "+" if total_pnl >= 0 else ""
     today_dir = "+" if today_pnl >= 0 else ""
     lines.append(f"   总盈亏 {pnl_dir}{total_pnl:,.0f}元 | {today_icon} 今日 {today_dir}{today_pnl:,.0f}元")
     lines.append("")
+
+    # 大盘仓位指引
+    if pos_guide:
+        lines.append("━━━ 🏛️ 大盘仓位指引 ━━━")
+        idx_summary = []
+        for d in pos_guide.get('index_data', []):
+            idx_summary.append(f"{d['icon']}{d['name']} {d['arrangement']}")
+        lines.append("   " + " | ".join(idx_summary[:3]))
+        if len(idx_summary) > 3:
+            lines.append("   " + " | ".join(idx_summary[3:]))
+
+        lines.append(f"   大盘: <b>{pos_guide['market_status']}</b>")
+        lines.append(f"   建议仓位: {pos_guide['target_low']}-{pos_guide['target_high']}% | 当前: {position_pct:.0f}%")
+        lines.append(f"   {pos_guide['suggestion_icon']} {pos_guide['suggestion']}")
+        above = pos_guide.get('above250_count', 0)
+        total = pos_guide.get('total', 0)
+        if total:
+            lines.append(f"   年线: {above}/{total}指数站上年线")
+        lines.append("")
 
     # 公告提醒（置顶）
     if ann_alerts:
@@ -677,8 +872,12 @@ def format_report(account, results, total_mv, total_pnl, today_pnl, cash_pct, an
     # 操作建议汇总
     lines.append("")
     actions = [r for r in results if r['advice_icon'] != "🟢"]
-    if actions or ann_alerts:
+    has_actions = actions or ann_alerts or (pos_guide and pos_guide.get('suggestion_icon') != "✅")
+
+    if has_actions:
         lines.append("━━━ 📋 操作建议 ━━━")
+        if pos_guide and pos_guide.get('suggestion_icon') != "✅":
+            lines.append(f"   {pos_guide['suggestion_icon']} 仓位: {pos_guide['suggestion']}")
         for r in actions:
             lines.append(f"   {r['advice_icon']} {r['name']}: {r['advice']}")
         if ann_alerts:
@@ -687,7 +886,7 @@ def format_report(account, results, total_mv, total_pnl, today_pnl, cash_pct, an
                 lines.append(f"   {icon} {a['name']}: {a['action']}")
     else:
         lines.append("━━━ 📋 操作建议 ━━━")
-        lines.append("   ✅ 无异常，正常持有")
+        lines.append("   ✅ 无异常，仓位合理，正常持有")
 
     return "\n".join(lines)
 
