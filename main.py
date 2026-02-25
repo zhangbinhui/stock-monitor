@@ -1098,6 +1098,30 @@ def generate_sell_signals(price_data: Dict, fundamental_data: Dict, announcement
                 "action": "基本面恶化，考虑减仓或清仓"
             })
 
+        # === 成长股过热预警（林奇鸡尾酒会理论：人人谈论时=见顶） ===
+        bias20 = price_data.get('bias20', 0) or 0
+        bias60 = price_data.get('bias60', 0) or 0
+        if stock_type == "成长股":
+            if bias20 > 20:
+                signals.append({
+                    "signal": f"成长股过热：偏离MA20达{bias20:.1f}%",
+                    "level": "danger",
+                    "action": "严重超买，短期回调风险极大，考虑减仓"
+                })
+            elif bias20 > 12:
+                signals.append({
+                    "signal": f"成长股偏热：偏离MA20达{bias20:.1f}%",
+                    "level": "warning",
+                    "action": "短线超买，不宜追高"
+                })
+        # 所有类型：极端偏离
+        if bias20 > 25:
+            signals.append({
+                "signal": f"极端超买：偏离MA20达{bias20:.1f}%",
+                "level": "danger",
+                "action": "严重偏离均线，注意回调风险"
+            })
+
         # === 公告信号 ===
         if has_insider_sell:
             signals.append({
@@ -1200,23 +1224,37 @@ def classify_stock_type(fundamental_data: Dict) -> str:
             return "困境反转"  # 营收高增长也给机会观察
         return "亏损"
 
-    # 周期股：行业匹配 OR 利润波动大
+    # 周期股 vs 成长股判断（林奇：看商业模式，不只看利润波动）
     is_cyclical_industry = any(kw in industry for kw in CYCLICAL_INDUSTRY_KEYWORDS)
     profit_volatile = False
     if net_profit is not None and prev_net_profit is not None and prev_net_profit != 0:
         change_ratio = abs((net_profit - prev_net_profit) / abs(prev_net_profit))
         if change_ratio > 0.5:  # 利润波动超过50%
             profit_volatile = True
-    if is_cyclical_industry or profit_volatile:
+
+    # 成长股优先判断：营收+利润双高增长，即使利润波动大也可能是小基数成长股
+    is_high_growth = revenue_growth > 15 and profit_growth > 15
+    if is_high_growth:
+        if is_cyclical_industry:
+            # 周期行业+高增长 → 可能是周期上行期，按周期股处理
+            return "周期股"
+        else:
+            # 非周期行业+高增长 → 成长股（即使利润波动大，小基数正常）
+            return "成长股"
+
+    # 明确周期行业 → 周期股
+    if is_cyclical_industry:
         return "周期股"
 
-    # 成长股
-    if revenue_growth > 15 and profit_growth > 15:
-        return "成长股"
+    # 非周期行业但利润波动极大(>100%) → 周期股（异常波动，非正常经营）
+    if profit_volatile and change_ratio > 1.0:
+        return "周期股"
 
     # 价值股
     if roe > 8 and revenue_growth < 15 and profit_growth < 15:
         return "价值股"
+    
+    # 利润波动50-100%但非周期行业 → 归入一般（不强行归周期）
 
     return "一般"
 
@@ -1380,12 +1418,34 @@ def evaluate_by_type(stock_type: str, fundamental_data: Dict) -> Tuple[bool, str
         decline_warn = ""
         if profit_trend == "下降":
             decline_warn = " ⚠️业绩下滑中"
-        if pe > 0 and pe < 15:
-            return True, f"✅价值股PE={pe:.1f}合理{decline_warn}"
-        elif pe >= 15 and pe <= 20:
-            return True, f"⚠️价值股PE={pe:.1f}偏高{decline_warn}"
-        elif pe > 20:
-            return False, f"❌价值股PE={pe:.1f}高估{decline_warn}"
+        
+        # 分行业PE合理区间（林奇：同行业比较PE比绝对值更有意义）
+        industry = fundamental_data.get("industry") or ""
+        if any(kw in industry for kw in ["银行", "保险"]):
+            pe_low, pe_mid, pe_high = 6, 10, 15  # 金融股PE天然低
+            sector = "金融"
+        elif any(kw in industry for kw in ["地产", "房地产", "建筑"]):
+            pe_low, pe_mid, pe_high = 6, 10, 15
+            sector = "地产"
+        elif any(kw in industry for kw in ["白酒", "食品", "饮料", "医药", "消费"]):
+            pe_low, pe_mid, pe_high = 15, 25, 35  # 消费股PE高是常态
+            sector = "消费"
+        elif any(kw in industry for kw in ["电力", "公用", "高速", "港口", "水务"]):
+            pe_low, pe_mid, pe_high = 8, 15, 20  # 公用事业
+            sector = "公用"
+        else:
+            pe_low, pe_mid, pe_high = 8, 15, 20  # 默认
+            sector = ""
+        
+        sector_note = f"({sector})" if sector else ""
+        if pe > 0 and pe < pe_low:
+            return True, f"✅价值股{sector_note}PE={pe:.1f}极低{decline_warn}"
+        elif pe >= pe_low and pe < pe_mid:
+            return True, f"✅价值股{sector_note}PE={pe:.1f}合理{decline_warn}"
+        elif pe >= pe_mid and pe <= pe_high:
+            return True, f"⚠️价值股{sector_note}PE={pe:.1f}偏高{decline_warn}"
+        elif pe > pe_high:
+            return False, f"❌价值股{sector_note}PE={pe:.1f}高估{decline_warn}"
         else:
             return True, f"✅价值股PE数据异常，默认通过"
 
@@ -1506,45 +1566,62 @@ def calc_position_and_target(stock_type: str, fundamental_data: Dict, valuation_
             target_logic = "利润下行+估值不低"
     
     elif stock_type == "价值股":
-        # 价值股目标：PE修复到合理水平
-        if pe > 0 and pe < 8:
-            # 极低PE，修复空间大
-            target_pe = min(pe * 1.5, 12)
+        # 价值股目标：PE修复到行业合理水平
+        industry = fundamental_data.get("industry") or ""
+        if any(kw in industry for kw in ["银行", "保险"]):
+            sector_pe_target = 8   # 金融股目标PE
+            sector_name = "金融"
+        elif any(kw in industry for kw in ["地产", "房地产", "建筑"]):
+            sector_pe_target = 8
+            sector_name = "地产"
+        elif any(kw in industry for kw in ["白酒", "食品", "饮料", "医药", "消费"]):
+            sector_pe_target = 22  # 消费股目标PE
+            sector_name = "消费"
+        elif any(kw in industry for kw in ["电力", "公用", "高速", "港口", "水务"]):
+            sector_pe_target = 12
+            sector_name = "公用"
+        else:
+            sector_pe_target = 12
+            sector_name = ""
+        
+        if pe > 0 and pe < sector_pe_target * 0.6:
+            # PE远低于行业合理值，修复空间大
+            target_pe = sector_pe_target
             target_pct = (target_pe / pe - 1) * 100
             dividend_yield = round(100 / pe * 0.3, 1)  # 假设30%分红率
             if profit_trend == "上升":
                 position_tier = "重仓"
                 position_pct = "25-30%"
                 target_return = f"{target_pct:.0f}-{target_pct*1.3:.0f}%"
-                target_logic = f"PE={pe:.1f}极低+业绩上行→PE修复至{target_pe:.0f}即{target_pct:.0f}%+，股息率约{dividend_yield}%"
+                target_logic = f"PE={pe:.1f}远低于{sector_name or '行业'}合理值{target_pe}+业绩上行→戴维斯双击，股息率约{dividend_yield}%"
             else:
                 position_tier = "中仓"
                 position_pct = "15-20%"
-                target_return = f"{target_pct*0.6:.0f}-{target_pct:.0f}%"
-                target_logic = f"PE={pe:.1f}极低→PE修复至{target_pe:.0f}即{target_pct:.0f}%，股息率约{dividend_yield}%"
-        elif pe >= 8 and pe < 12:
-            target_pe = min(pe * 1.3, 15)
+                target_return = f"{target_pct*0.5:.0f}-{target_pct:.0f}%"
+                target_logic = f"PE={pe:.1f}→修复至{target_pe}即{target_pct:.0f}%，股息率约{dividend_yield}%"
+        elif pe > 0 and pe < sector_pe_target:
+            target_pe = sector_pe_target
             target_pct = (target_pe / pe - 1) * 100
             if profit_trend == "上升":
                 position_tier = "中仓"
                 position_pct = "15-20%"
                 target_return = f"{target_pct:.0f}-{target_pct*1.3:.0f}%"
-                target_logic = f"PE={pe:.1f}合理+业绩上行→赚估值+业绩双升"
+                target_logic = f"PE={pe:.1f}+业绩上行→赚估值+业绩双升"
             else:
                 position_tier = "轻仓"
                 position_pct = "10-15%"
                 target_return = f"10-{target_pct:.0f}%"
-                target_logic = f"PE={pe:.1f}合理，赚估值修复的钱"
-        elif pe >= 12 and pe <= 15:
+                target_logic = f"PE={pe:.1f}→行业合理值{target_pe}，赚估值修复"
+        elif pe >= sector_pe_target and pe <= sector_pe_target * 1.3:
             position_tier = "轻仓"
             position_pct = "5-10%"
             target_return = "5-15%"
-            target_logic = f"PE={pe:.1f}偏高，上涨空间有限"
+            target_logic = f"PE={pe:.1f}接近{sector_name or '行业'}合理值{sector_pe_target}，空间有限"
         else:
             position_tier = "观望"
             position_pct = "0%"
             target_return = "-"
-            target_logic = "PE偏高"
+            target_logic = f"PE={pe:.1f}超过行业合理值"
     
     else:  # 一般
         if pe > 0 and pe < 10:
