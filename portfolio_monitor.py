@@ -30,6 +30,14 @@ except ImportError:
 
 from config import EMAIL_SENDER, EMAIL_PASSWORD, SMTP_SERVER, SMTP_PORT
 
+# 引入 System A 的三重过滤链，用于持仓复验
+try:
+    from main import get_fundamental_data, classify_stock_type, evaluate_by_type, get_stock_price_data, get_market_cap
+    SYSTEM_A_AVAILABLE = True
+except ImportError:
+    SYSTEM_A_AVAILABLE = False
+    logging.warning("无法引入 System A 三重过滤模块，持仓复验将跳过")
+
 log = logging.getLogger("portfolio")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -296,6 +304,95 @@ def _scan_key_announcements(codes: List[str], names: Dict[str, str]) -> List[Dic
             log.debug(f"检查 {code} 公告失败: {e}")
 
     return alerts
+
+
+def revalidate_with_system_a(code: str, name: str, manual_class: str = None) -> List[Dict]:
+    """
+    用 System A 的三重过滤链对持仓进行复验：
+    1. 获取基本面数据（get_fundamental_data）
+    2. 自动分类（classify_stock_type）
+    3. 估值判断（evaluate_by_type）
+    
+    如果"买入理由已失效"（分类变了、估值不通过），返回对应的danger/warning信号。
+    """
+    if not SYSTEM_A_AVAILABLE:
+        return []
+
+    signals = []
+    try:
+        # 获取市值（用于PS计算等）
+        market_cap = None
+        try:
+            market_cap = get_market_cap(code)
+        except:
+            pass
+
+        # 获取基本面数据
+        fund_data = get_fundamental_data(code, market_cap_yi=market_cap, stock_name=name)
+        if not fund_data or fund_data.get("net_profit") is None:
+            return []
+
+        # 自动分类
+        auto_type = classify_stock_type(fund_data)
+
+        # 估值判断
+        valuation_pass, valuation_desc = evaluate_by_type(auto_type, fund_data)
+
+        # 如果手动指定了困境反转，用困境反转重新评估
+        if manual_class == "困境反转" and auto_type == "亏损":
+            auto_type = "困境反转"
+            valuation_pass, valuation_desc = evaluate_by_type("困境反转", fund_data)
+
+        # === 核心逻辑：检查买入理由是否还成立 ===
+
+        # 1. 分类漂移检查
+        if manual_class and auto_type != manual_class and manual_class != "困境反转":
+            signals.append({
+                "signal": f"⚠️ 分类漂移：买入时={manual_class}，现在={auto_type}",
+                "level": "warning",
+                "action": f"股票性质可能已变，重新评估"
+            })
+
+        # 2. 三重过滤不通过 = 买入理由失效
+        if not valuation_pass:
+            # 根据分类给出具体的"理由失效"描述
+            effective_class = manual_class or auto_type
+
+            if effective_class == "成长股":
+                reason = "成长股利润增速转负/放缓 → 林奇原则：增速下滑立即清仓"
+                level = "danger"
+            elif effective_class == "周期股":
+                reason = "周期股估值不再便宜或利润拐头向下"
+                level = "warning"
+            elif effective_class == "价值股":
+                reason = "价值股估值偏高或业绩下滑 → PE可能是陷阱"
+                level = "warning"
+            elif effective_class == "困境反转":
+                reason = "困境反转条件不再满足"
+                level = "warning"
+            else:
+                reason = "估值不通过"
+                level = "warning"
+
+            signals.append({
+                "signal": f"🔴 三重过滤复验不通过({auto_type}): {valuation_desc}",
+                "level": level,
+                "action": reason
+            })
+        else:
+            # 通过了，给个正面确认
+            signals.append({
+                "signal": f"✅ 三重过滤复验通过({auto_type}): {valuation_desc}",
+                "level": "info",
+                "action": "买入逻辑仍然成立"
+            })
+
+        log.info(f"  {code} {name} 三重过滤复验: 类型={auto_type}, 通过={valuation_pass}, {valuation_desc}")
+
+    except Exception as e:
+        log.warning(f"  {code} 三重过滤复验失败: {e}")
+
+    return signals
 
 
 def get_stock_fundamental_signals(code: str, stock_type_hint: str = None) -> Tuple[List[Dict], str]:
@@ -789,6 +886,18 @@ def analyze_portfolio(include_announcements=True) -> Tuple[str, List[Dict]]:
                     signals.append({"signal": f"跌破增持均价({insider_pct:.0f}%)", "level": "warning", "action": "关注基本面"})
                 else:
                     signals.append({"signal": f"高于增持均价{insider_pct:.0f}%", "level": "info", "action": ""})
+
+        # === P0: System A 三重过滤复验（买入理由是否还成立） ===
+        if h_type != 'etf':
+            reval_signals = revalidate_with_system_a(code, name, manual_class=h.get('stock_class'))
+            signals.extend(reval_signals)
+            for s in reval_signals:
+                if s['level'] == 'danger' and advice_icon != "🔴":
+                    advice = s['action']
+                    advice_icon = "🔴"
+                elif s['level'] == 'warning' and advice_icon == "🟢":
+                    advice = s['action']
+                    advice_icon = "🟡"
 
         # === P1: 分类专属卖出/持有逻辑（林奇：卖出理由=买入逻辑失效） ===
         if h_type != 'etf' and detected_type:

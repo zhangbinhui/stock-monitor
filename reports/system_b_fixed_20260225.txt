@@ -1,0 +1,120 @@
+2026-02-25 16:05:22,466 [INFO] 获取实时行情: 5/5
+2026-02-25 16:05:24,159 [WARNING] 获取 605155 市值失败（原方案）: HTTPSConnectionPool(host='push2.eastmoney.com', port=443): Max retries exceeded with url: /api/qt/stock/get?fltt=2&invt=2&fields=f120%2Cf121%2Cf122%2Cf174%2Cf175%2Cf59%2Cf163%2Cf43%2Cf57%2Cf58%2Cf169%2Cf170%2Cf46%2Cf44%2Cf51%2Cf168%2Cf47%2Cf164%2Cf116%2Cf60%2Cf45%2Cf52%2Cf50%2Cf48%2Cf167%2Cf117%2Cf71%2Cf161%2Cf49%2Cf530%2Cf135%2Cf136%2Cf137%2Cf138%2Cf139%2Cf141%2Cf142%2Cf144%2Cf145%2Cf147%2Cf148%2Cf140%2Cf143%2Cf146%2Cf149%2Cf55%2Cf62%2Cf162%2Cf92%2Cf173%2Cf104%2Cf105%2Cf84%2Cf85%2Cf183%2Cf184%2Cf185%2Cf186%2Cf187%2Cf188%2Cf189%2Cf190%2Cf191%2Cf192%2Cf107%2Cf111%2Cf86%2Cf177%2Cf78%2Cf110%2Cf262%2Cf263%2Cf264%2Cf267%2Cf268%2Cf255%2Cf256%2Cf257%2Cf258%2Cf127%2Cf199%2Cf128%2Cf198%2Cf259%2Cf260%2Cf261%2Cf171%2Cf277%2Cf278%2Cf279%2Cf288%2Cf152%2Cf250%2Cf251%2Cf252%2Cf253%2Cf254%2Cf269%2Cf270%2Cf271%2Cf272%2Cf273%2Cf274%2Cf275%2Cf276%2Cf265%2Cf266%2Cf289%2Cf290%2Cf286%2Cf285%2Cf292%2Cf293%2Cf294%2Cf295%2Cf43&secid=1.605155 (Caused by ProxyError('Unable to connect to proxy', RemoteDisconnected('Remote end closed connection without response')))
+2026-02-25 16:05:24,159 [INFO]   尝试用日K线数据估算 605155 市值
+2026-02-25 16:05:24,482 [INFO]   605155 估算市值: 36.04亿元
+2026-02-25 16:05:25,041 [INFO]   605155 利润趋势(4Q同比): 持平 [2025-09-30:-5% | 2025-06-30:-6% | 2025-03-31:-7% | 2024-12-31:+34%]
+2026-02-25 16:05:26,109 [WARNING] 获取 605155 行业信息失败: HTTPSConnectionPool(host='push2.eastmoney.com', port=443): Max retries exceeded with url: /api/qt/stock/get?fltt=2&invt=2&fields=f120%2Cf121%2Cf122%2Cf174%2Cf175%2Cf59%2Cf163%2Cf43%2Cf57%2Cf58%2Cf169%2Cf170%2Cf46%2Cf44%2Cf51%2Cf168%2Cf47%2Cf164%2Cf116%2Cf60%2Cf45%2Cf52%2Cf50%2Cf48%2Cf167%2Cf117%2Cf71%2Cf161%2Cf49%2Cf530%2Cf135%2Cf136%2Cf137%2Cf138%2Cf139%2Cf141%2Cf142%2Cf144%2Cf145%2Cf147%2Cf148%2Cf140%2Cf143%2Cf146%2Cf149%2Cf55%2Cf62%2Cf162%2Cf92%2Cf173%2Cf104%2Cf105%2Cf84%2Cf85%2Cf183%2Cf184%2Cf185%2Cf186%2Cf187%2Cf188%2Cf189%2Cf190%2Cf191%2Cf192%2Cf107%2Cf111%2Cf86%2Cf177%2Cf78%2Cf110%2Cf262%2Cf263%2Cf264%2Cf267%2Cf268%2Cf255%2Cf256%2Cf257%2Cf258%2Cf127%2Cf199%2Cf128%2Cf198%2Cf259%2Cf260%2Cf261%2Cf171%2Cf277%2Cf278%2Cf279%2Cf288%2Cf152%2Cf250%2Cf251%2Cf252%2Cf253%2Cf254%2Cf269%2Cf270%2Cf271%2Cf272%2Cf273%2Cf274%2Cf275%2Cf276%2Cf265%2Cf266%2Cf289%2Cf290%2Cf286%2Cf285%2Cf292%2Cf293%2Cf294%2Cf295%2Cf43&secid=1.605155 (Caused by ProxyError('Unable to connect to proxy', RemoteDisconnected('Remote end closed connection without response')))
+2026-02-25 16:05:27,176 [WARNING] 获取 605155 基本信息失败: HTTPSConnectionPool(host='push2.eastmoney.com', port=443): Max retries exceeded with url: /api/qt/stock/get?fltt=2&invt=2&fields=f120%2Cf121%2Cf122%2Cf174%2Cf175%2Cf59%2Cf163%2Cf43%2Cf57%2Cf58%2Cf169%2Cf170%2Cf46%2Cf44%2Cf51%2Cf168%2Cf47%2Cf164%2Cf116%2Cf60%2Cf45%2Cf52%2Cf50%2Cf48%2Cf167%2Cf117%2Cf71%2Cf161%2Cf49%2Cf530%2Cf135%2Cf136%2Cf137%2Cf138%2Cf139%2Cf141%2Cf142%2Cf144%2Cf145%2Cf147%2Cf148%2Cf140%2Cf143%2Cf146%2Cf149%2Cf55%2Cf62%2Cf162%2Cf92%2Cf173%2Cf104%2Cf105%2Cf84%2Cf85%2Cf183%2Cf184%2Cf185%2Cf186%2Cf187%2Cf188%2Cf189%2Cf190%2Cf191%2Cf192%2Cf107%2Cf111%2Cf86%2Cf177%2Cf78%2Cf110%2Cf262%2Cf263%2Cf264%2Cf267%2Cf268%2Cf255%2Cf256%2Cf257%2Cf258%2Cf127%2Cf199%2Cf128%2Cf198%2Cf259%2Cf260%2Cf261%2Cf171%2Cf277%2Cf278%2Cf279%2Cf288%2Cf152%2Cf250%2Cf251%2Cf252%2Cf253%2Cf254%2Cf269%2Cf270%2Cf271%2Cf272%2Cf273%2Cf274%2Cf275%2Cf276%2Cf265%2Cf266%2Cf289%2Cf290%2Cf286%2Cf285%2Cf292%2Cf293%2Cf294%2Cf295%2Cf43&secid=1.605155 (Caused by ProxyError('Unable to connect to proxy', RemoteDisconnected('Remote end closed connection without response')))
+2026-02-25 16:05:27,176 [INFO]   使用 get_market_cap fallback 市值: 36.04亿元
+2026-02-25 16:05:27,176 [INFO]   尝试使用 stock_a_indicator_lg 获取 605155 估值指标
+2026-02-25 16:05:27,177 [WARNING]   stock_a_indicator_lg 也失败: module 'akshare' has no attribute 'stock_a_indicator_lg'
+2026-02-25 16:05:27,650 [INFO]     通过日K数据计算PB: 2.89
+2026-02-25 16:05:27,651 [INFO]   605155 基本面: 营收=8.17, 净利=1.22, ROE=9.89, PE=31.6
+2026-02-25 16:05:27,651 [INFO]   605155 西大门 三重过滤复验: 类型=成长股, 通过=False, ❌成长股利润负增长(最新季度增速-5%)
+2026-02-25 16:05:29,220 [WARNING] 获取 600733 市值失败（原方案）: HTTPSConnectionPool(host='push2.eastmoney.com', port=443): Max retries exceeded with url: /api/qt/stock/get?fltt=2&invt=2&fields=f120%2Cf121%2Cf122%2Cf174%2Cf175%2Cf59%2Cf163%2Cf43%2Cf57%2Cf58%2Cf169%2Cf170%2Cf46%2Cf44%2Cf51%2Cf168%2Cf47%2Cf164%2Cf116%2Cf60%2Cf45%2Cf52%2Cf50%2Cf48%2Cf167%2Cf117%2Cf71%2Cf161%2Cf49%2Cf530%2Cf135%2Cf136%2Cf137%2Cf138%2Cf139%2Cf141%2Cf142%2Cf144%2Cf145%2Cf147%2Cf148%2Cf140%2Cf143%2Cf146%2Cf149%2Cf55%2Cf62%2Cf162%2Cf92%2Cf173%2Cf104%2Cf105%2Cf84%2Cf85%2Cf183%2Cf184%2Cf185%2Cf186%2Cf187%2Cf188%2Cf189%2Cf190%2Cf191%2Cf192%2Cf107%2Cf111%2Cf86%2Cf177%2Cf78%2Cf110%2Cf262%2Cf263%2Cf264%2Cf267%2Cf268%2Cf255%2Cf256%2Cf257%2Cf258%2Cf127%2Cf199%2Cf128%2Cf198%2Cf259%2Cf260%2Cf261%2Cf171%2Cf277%2Cf278%2Cf279%2Cf288%2Cf152%2Cf250%2Cf251%2Cf252%2Cf253%2Cf254%2Cf269%2Cf270%2Cf271%2Cf272%2Cf273%2Cf274%2Cf275%2Cf276%2Cf265%2Cf266%2Cf289%2Cf290%2Cf286%2Cf285%2Cf292%2Cf293%2Cf294%2Cf295%2Cf43&secid=1.600733 (Caused by ProxyError('Unable to connect to proxy', RemoteDisconnected('Remote end closed connection without response')))
+2026-02-25 16:05:29,221 [INFO]   尝试用日K线数据估算 600733 市值
+2026-02-25 16:05:29,568 [INFO]   600733 估算市值: 405.03亿元
+2026-02-25 16:05:30,185 [INFO]   600733 利润趋势(4Q同比): 持平 [2025-09-30:+23% | 2025-06-30:+10% | 2025-03-31:+7% | 2024-12-31:-22%]
+2026-02-25 16:05:31,225 [WARNING] 获取 600733 行业信息失败: HTTPSConnectionPool(host='push2.eastmoney.com', port=443): Max retries exceeded with url: /api/qt/stock/get?fltt=2&invt=2&fields=f120%2Cf121%2Cf122%2Cf174%2Cf175%2Cf59%2Cf163%2Cf43%2Cf57%2Cf58%2Cf169%2Cf170%2Cf46%2Cf44%2Cf51%2Cf168%2Cf47%2Cf164%2Cf116%2Cf60%2Cf45%2Cf52%2Cf50%2Cf48%2Cf167%2Cf117%2Cf71%2Cf161%2Cf49%2Cf530%2Cf135%2Cf136%2Cf137%2Cf138%2Cf139%2Cf141%2Cf142%2Cf144%2Cf145%2Cf147%2Cf148%2Cf140%2Cf143%2Cf146%2Cf149%2Cf55%2Cf62%2Cf162%2Cf92%2Cf173%2Cf104%2Cf105%2Cf84%2Cf85%2Cf183%2Cf184%2Cf185%2Cf186%2Cf187%2Cf188%2Cf189%2Cf190%2Cf191%2Cf192%2Cf107%2Cf111%2Cf86%2Cf177%2Cf78%2Cf110%2Cf262%2Cf263%2Cf264%2Cf267%2Cf268%2Cf255%2Cf256%2Cf257%2Cf258%2Cf127%2Cf199%2Cf128%2Cf198%2Cf259%2Cf260%2Cf261%2Cf171%2Cf277%2Cf278%2Cf279%2Cf288%2Cf152%2Cf250%2Cf251%2Cf252%2Cf253%2Cf254%2Cf269%2Cf270%2Cf271%2Cf272%2Cf273%2Cf274%2Cf275%2Cf276%2Cf265%2Cf266%2Cf289%2Cf290%2Cf286%2Cf285%2Cf292%2Cf293%2Cf294%2Cf295%2Cf43&secid=1.600733 (Caused by ProxyError('Unable to connect to proxy', RemoteDisconnected('Remote end closed connection without response')))
+2026-02-25 16:05:32,264 [WARNING] 获取 600733 基本信息失败: HTTPSConnectionPool(host='push2.eastmoney.com', port=443): Max retries exceeded with url: /api/qt/stock/get?fltt=2&invt=2&fields=f120%2Cf121%2Cf122%2Cf174%2Cf175%2Cf59%2Cf163%2Cf43%2Cf57%2Cf58%2Cf169%2Cf170%2Cf46%2Cf44%2Cf51%2Cf168%2Cf47%2Cf164%2Cf116%2Cf60%2Cf45%2Cf52%2Cf50%2Cf48%2Cf167%2Cf117%2Cf71%2Cf161%2Cf49%2Cf530%2Cf135%2Cf136%2Cf137%2Cf138%2Cf139%2Cf141%2Cf142%2Cf144%2Cf145%2Cf147%2Cf148%2Cf140%2Cf143%2Cf146%2Cf149%2Cf55%2Cf62%2Cf162%2Cf92%2Cf173%2Cf104%2Cf105%2Cf84%2Cf85%2Cf183%2Cf184%2Cf185%2Cf186%2Cf187%2Cf188%2Cf189%2Cf190%2Cf191%2Cf192%2Cf107%2Cf111%2Cf86%2Cf177%2Cf78%2Cf110%2Cf262%2Cf263%2Cf264%2Cf267%2Cf268%2Cf255%2Cf256%2Cf257%2Cf258%2Cf127%2Cf199%2Cf128%2Cf198%2Cf259%2Cf260%2Cf261%2Cf171%2Cf277%2Cf278%2Cf279%2Cf288%2Cf152%2Cf250%2Cf251%2Cf252%2Cf253%2Cf254%2Cf269%2Cf270%2Cf271%2Cf272%2Cf273%2Cf274%2Cf275%2Cf276%2Cf265%2Cf266%2Cf289%2Cf290%2Cf286%2Cf285%2Cf292%2Cf293%2Cf294%2Cf295%2Cf43&secid=1.600733 (Caused by ProxyError('Unable to connect to proxy', RemoteDisconnected('Remote end closed connection without response')))
+2026-02-25 16:05:32,264 [INFO]   使用 get_market_cap fallback 市值: 405.03亿元
+2026-02-25 16:05:32,265 [INFO]   尝试使用 stock_a_indicator_lg 获取 600733 估值指标
+2026-02-25 16:05:32,266 [WARNING]   stock_a_indicator_lg 也失败: module 'akshare' has no attribute 'stock_a_indicator_lg'
+2026-02-25 16:05:32,883 [INFO]     通过日K数据计算PB: 8.36
+2026-02-25 16:05:32,883 [INFO]   600733 基本面: 营收=145.12, 净利=-69.48, ROE=-246.66, PE=None
+2026-02-25 16:05:32,883 [INFO]   600733 北汽蓝谷 三重过滤复验: 类型=困境反转, 通过=True, 🟡困境反转试探期(营收+57%，毛利率连续3Q改善，PS=2.8)——高管增持+毛利率连续改善，试探建仓10%
+2026-02-25 16:05:34,314 [WARNING] 获取 601077 市值失败（原方案）: HTTPSConnectionPool(host='push2.eastmoney.com', port=443): Max retries exceeded with url: /api/qt/stock/get?fltt=2&invt=2&fields=f120%2Cf121%2Cf122%2Cf174%2Cf175%2Cf59%2Cf163%2Cf43%2Cf57%2Cf58%2Cf169%2Cf170%2Cf46%2Cf44%2Cf51%2Cf168%2Cf47%2Cf164%2Cf116%2Cf60%2Cf45%2Cf52%2Cf50%2Cf48%2Cf167%2Cf117%2Cf71%2Cf161%2Cf49%2Cf530%2Cf135%2Cf136%2Cf137%2Cf138%2Cf139%2Cf141%2Cf142%2Cf144%2Cf145%2Cf147%2Cf148%2Cf140%2Cf143%2Cf146%2Cf149%2Cf55%2Cf62%2Cf162%2Cf92%2Cf173%2Cf104%2Cf105%2Cf84%2Cf85%2Cf183%2Cf184%2Cf185%2Cf186%2Cf187%2Cf188%2Cf189%2Cf190%2Cf191%2Cf192%2Cf107%2Cf111%2Cf86%2Cf177%2Cf78%2Cf110%2Cf262%2Cf263%2Cf264%2Cf267%2Cf268%2Cf255%2Cf256%2Cf257%2Cf258%2Cf127%2Cf199%2Cf128%2Cf198%2Cf259%2Cf260%2Cf261%2Cf171%2Cf277%2Cf278%2Cf279%2Cf288%2Cf152%2Cf250%2Cf251%2Cf252%2Cf253%2Cf254%2Cf269%2Cf270%2Cf271%2Cf272%2Cf273%2Cf274%2Cf275%2Cf276%2Cf265%2Cf266%2Cf289%2Cf290%2Cf286%2Cf285%2Cf292%2Cf293%2Cf294%2Cf295%2Cf43&secid=1.601077 (Caused by ProxyError('Unable to connect to proxy', RemoteDisconnected('Remote end closed connection without response')))
+2026-02-25 16:05:34,314 [INFO]   尝试用日K线数据估算 601077 市值
+2026-02-25 16:05:34,537 [INFO]   601077 估算市值: 576.25亿元
+2026-02-25 16:05:35,073 [INFO]   601077 利润趋势(4Q同比): 持平 [2025-09-30:+7% | 2025-06-30:+9% | 2025-03-31:+7% | 2024-12-31:+5%]
+2026-02-25 16:05:36,109 [WARNING] 获取 601077 行业信息失败: HTTPSConnectionPool(host='push2.eastmoney.com', port=443): Max retries exceeded with url: /api/qt/stock/get?fltt=2&invt=2&fields=f120%2Cf121%2Cf122%2Cf174%2Cf175%2Cf59%2Cf163%2Cf43%2Cf57%2Cf58%2Cf169%2Cf170%2Cf46%2Cf44%2Cf51%2Cf168%2Cf47%2Cf164%2Cf116%2Cf60%2Cf45%2Cf52%2Cf50%2Cf48%2Cf167%2Cf117%2Cf71%2Cf161%2Cf49%2Cf530%2Cf135%2Cf136%2Cf137%2Cf138%2Cf139%2Cf141%2Cf142%2Cf144%2Cf145%2Cf147%2Cf148%2Cf140%2Cf143%2Cf146%2Cf149%2Cf55%2Cf62%2Cf162%2Cf92%2Cf173%2Cf104%2Cf105%2Cf84%2Cf85%2Cf183%2Cf184%2Cf185%2Cf186%2Cf187%2Cf188%2Cf189%2Cf190%2Cf191%2Cf192%2Cf107%2Cf111%2Cf86%2Cf177%2Cf78%2Cf110%2Cf262%2Cf263%2Cf264%2Cf267%2Cf268%2Cf255%2Cf256%2Cf257%2Cf258%2Cf127%2Cf199%2Cf128%2Cf198%2Cf259%2Cf260%2Cf261%2Cf171%2Cf277%2Cf278%2Cf279%2Cf288%2Cf152%2Cf250%2Cf251%2Cf252%2Cf253%2Cf254%2Cf269%2Cf270%2Cf271%2Cf272%2Cf273%2Cf274%2Cf275%2Cf276%2Cf265%2Cf266%2Cf289%2Cf290%2Cf286%2Cf285%2Cf292%2Cf293%2Cf294%2Cf295%2Cf43&secid=1.601077 (Caused by ProxyError('Unable to connect to proxy', RemoteDisconnected('Remote end closed connection without response')))
+2026-02-25 16:05:36,109 [INFO]   601077 行业fallback: 从名称'渝农商行'推断为'银行'
+2026-02-25 16:05:37,147 [WARNING] 获取 601077 基本信息失败: HTTPSConnectionPool(host='push2.eastmoney.com', port=443): Max retries exceeded with url: /api/qt/stock/get?fltt=2&invt=2&fields=f120%2Cf121%2Cf122%2Cf174%2Cf175%2Cf59%2Cf163%2Cf43%2Cf57%2Cf58%2Cf169%2Cf170%2Cf46%2Cf44%2Cf51%2Cf168%2Cf47%2Cf164%2Cf116%2Cf60%2Cf45%2Cf52%2Cf50%2Cf48%2Cf167%2Cf117%2Cf71%2Cf161%2Cf49%2Cf530%2Cf135%2Cf136%2Cf137%2Cf138%2Cf139%2Cf141%2Cf142%2Cf144%2Cf145%2Cf147%2Cf148%2Cf140%2Cf143%2Cf146%2Cf149%2Cf55%2Cf62%2Cf162%2Cf92%2Cf173%2Cf104%2Cf105%2Cf84%2Cf85%2Cf183%2Cf184%2Cf185%2Cf186%2Cf187%2Cf188%2Cf189%2Cf190%2Cf191%2Cf192%2Cf107%2Cf111%2Cf86%2Cf177%2Cf78%2Cf110%2Cf262%2Cf263%2Cf264%2Cf267%2Cf268%2Cf255%2Cf256%2Cf257%2Cf258%2Cf127%2Cf199%2Cf128%2Cf198%2Cf259%2Cf260%2Cf261%2Cf171%2Cf277%2Cf278%2Cf279%2Cf288%2Cf152%2Cf250%2Cf251%2Cf252%2Cf253%2Cf254%2Cf269%2Cf270%2Cf271%2Cf272%2Cf273%2Cf274%2Cf275%2Cf276%2Cf265%2Cf266%2Cf289%2Cf290%2Cf286%2Cf285%2Cf292%2Cf293%2Cf294%2Cf295%2Cf43&secid=1.601077 (Caused by ProxyError('Unable to connect to proxy', RemoteDisconnected('Remote end closed connection without response')))
+2026-02-25 16:05:37,147 [INFO]   使用 get_market_cap fallback 市值: 576.25亿元
+2026-02-25 16:05:37,148 [INFO]   尝试使用 stock_a_indicator_lg 获取 601077 估值指标
+2026-02-25 16:05:37,148 [WARNING]   stock_a_indicator_lg 也失败: module 'akshare' has no attribute 'stock_a_indicator_lg'
+2026-02-25 16:05:37,636 [INFO]     通过日K数据计算PB: 0.59
+2026-02-25 16:05:37,636 [INFO]   601077 基本面: 营收=282.61, 净利=115.13, ROE=9.28, PE=4.86
+2026-02-25 16:05:37,637 [INFO]   601077 渝农商行 三重过滤复验: 类型=价值股, 通过=True, ✅价值股(金融)PE=4.9极低
+2026-02-25 16:05:39,144 [WARNING] 获取 600873 市值失败（原方案）: HTTPSConnectionPool(host='push2.eastmoney.com', port=443): Max retries exceeded with url: /api/qt/stock/get?fltt=2&invt=2&fields=f120%2Cf121%2Cf122%2Cf174%2Cf175%2Cf59%2Cf163%2Cf43%2Cf57%2Cf58%2Cf169%2Cf170%2Cf46%2Cf44%2Cf51%2Cf168%2Cf47%2Cf164%2Cf116%2Cf60%2Cf45%2Cf52%2Cf50%2Cf48%2Cf167%2Cf117%2Cf71%2Cf161%2Cf49%2Cf530%2Cf135%2Cf136%2Cf137%2Cf138%2Cf139%2Cf141%2Cf142%2Cf144%2Cf145%2Cf147%2Cf148%2Cf140%2Cf143%2Cf146%2Cf149%2Cf55%2Cf62%2Cf162%2Cf92%2Cf173%2Cf104%2Cf105%2Cf84%2Cf85%2Cf183%2Cf184%2Cf185%2Cf186%2Cf187%2Cf188%2Cf189%2Cf190%2Cf191%2Cf192%2Cf107%2Cf111%2Cf86%2Cf177%2Cf78%2Cf110%2Cf262%2Cf263%2Cf264%2Cf267%2Cf268%2Cf255%2Cf256%2Cf257%2Cf258%2Cf127%2Cf199%2Cf128%2Cf198%2Cf259%2Cf260%2Cf261%2Cf171%2Cf277%2Cf278%2Cf279%2Cf288%2Cf152%2Cf250%2Cf251%2Cf252%2Cf253%2Cf254%2Cf269%2Cf270%2Cf271%2Cf272%2Cf273%2Cf274%2Cf275%2Cf276%2Cf265%2Cf266%2Cf289%2Cf290%2Cf286%2Cf285%2Cf292%2Cf293%2Cf294%2Cf295%2Cf43&secid=1.600873 (Caused by ProxyError('Unable to connect to proxy', RemoteDisconnected('Remote end closed connection without response')))
+2026-02-25 16:05:39,144 [INFO]   尝试用日K线数据估算 600873 市值
+2026-02-25 16:05:39,474 [INFO]   600873 估算市值: 311.27亿元
+2026-02-25 16:05:40,117 [INFO]   600873 利润趋势(4Q同比): 上升 [2025-09-30:+14% | 2025-06-30:+25% | 2025-03-31:+42% | 2024-12-31:-13%]
+2026-02-25 16:05:41,186 [WARNING] 获取 600873 行业信息失败: HTTPSConnectionPool(host='push2.eastmoney.com', port=443): Max retries exceeded with url: /api/qt/stock/get?fltt=2&invt=2&fields=f120%2Cf121%2Cf122%2Cf174%2Cf175%2Cf59%2Cf163%2Cf43%2Cf57%2Cf58%2Cf169%2Cf170%2Cf46%2Cf44%2Cf51%2Cf168%2Cf47%2Cf164%2Cf116%2Cf60%2Cf45%2Cf52%2Cf50%2Cf48%2Cf167%2Cf117%2Cf71%2Cf161%2Cf49%2Cf530%2Cf135%2Cf136%2Cf137%2Cf138%2Cf139%2Cf141%2Cf142%2Cf144%2Cf145%2Cf147%2Cf148%2Cf140%2Cf143%2Cf146%2Cf149%2Cf55%2Cf62%2Cf162%2Cf92%2Cf173%2Cf104%2Cf105%2Cf84%2Cf85%2Cf183%2Cf184%2Cf185%2Cf186%2Cf187%2Cf188%2Cf189%2Cf190%2Cf191%2Cf192%2Cf107%2Cf111%2Cf86%2Cf177%2Cf78%2Cf110%2Cf262%2Cf263%2Cf264%2Cf267%2Cf268%2Cf255%2Cf256%2Cf257%2Cf258%2Cf127%2Cf199%2Cf128%2Cf198%2Cf259%2Cf260%2Cf261%2Cf171%2Cf277%2Cf278%2Cf279%2Cf288%2Cf152%2Cf250%2Cf251%2Cf252%2Cf253%2Cf254%2Cf269%2Cf270%2Cf271%2Cf272%2Cf273%2Cf274%2Cf275%2Cf276%2Cf265%2Cf266%2Cf289%2Cf290%2Cf286%2Cf285%2Cf292%2Cf293%2Cf294%2Cf295%2Cf43&secid=1.600873 (Caused by ProxyError('Unable to connect to proxy', RemoteDisconnected('Remote end closed connection without response')))
+2026-02-25 16:05:41,187 [INFO]   600873 行业fallback: 从名称'梅花生物'推断为'医药'
+2026-02-25 16:05:42,247 [WARNING] 获取 600873 基本信息失败: HTTPSConnectionPool(host='push2.eastmoney.com', port=443): Max retries exceeded with url: /api/qt/stock/get?fltt=2&invt=2&fields=f120%2Cf121%2Cf122%2Cf174%2Cf175%2Cf59%2Cf163%2Cf43%2Cf57%2Cf58%2Cf169%2Cf170%2Cf46%2Cf44%2Cf51%2Cf168%2Cf47%2Cf164%2Cf116%2Cf60%2Cf45%2Cf52%2Cf50%2Cf48%2Cf167%2Cf117%2Cf71%2Cf161%2Cf49%2Cf530%2Cf135%2Cf136%2Cf137%2Cf138%2Cf139%2Cf141%2Cf142%2Cf144%2Cf145%2Cf147%2Cf148%2Cf140%2Cf143%2Cf146%2Cf149%2Cf55%2Cf62%2Cf162%2Cf92%2Cf173%2Cf104%2Cf105%2Cf84%2Cf85%2Cf183%2Cf184%2Cf185%2Cf186%2Cf187%2Cf188%2Cf189%2Cf190%2Cf191%2Cf192%2Cf107%2Cf111%2Cf86%2Cf177%2Cf78%2Cf110%2Cf262%2Cf263%2Cf264%2Cf267%2Cf268%2Cf255%2Cf256%2Cf257%2Cf258%2Cf127%2Cf199%2Cf128%2Cf198%2Cf259%2Cf260%2Cf261%2Cf171%2Cf277%2Cf278%2Cf279%2Cf288%2Cf152%2Cf250%2Cf251%2Cf252%2Cf253%2Cf254%2Cf269%2Cf270%2Cf271%2Cf272%2Cf273%2Cf274%2Cf275%2Cf276%2Cf265%2Cf266%2Cf289%2Cf290%2Cf286%2Cf285%2Cf292%2Cf293%2Cf294%2Cf295%2Cf43&secid=1.600873 (Caused by ProxyError('Unable to connect to proxy', RemoteDisconnected('Remote end closed connection without response')))
+2026-02-25 16:05:42,247 [INFO]   使用 get_market_cap fallback 市值: 311.27亿元
+2026-02-25 16:05:42,248 [INFO]   尝试使用 stock_a_indicator_lg 获取 600873 估值指标
+2026-02-25 16:05:42,248 [WARNING]   stock_a_indicator_lg 也失败: module 'akshare' has no attribute 'stock_a_indicator_lg'
+2026-02-25 16:05:42,883 [INFO]     通过日K数据计算PB: 2.17
+2026-02-25 16:05:42,884 [INFO]   600873 基本面: 营收=250.69, 净利=27.4, ROE=19.04, PE=10.56
+2026-02-25 16:05:42,884 [INFO]   600873 梅花生物 三重过滤复验: 类型=价值股, 通过=True, ✅价值股(消费)PE=10.6极低
+2026-02-25 16:05:42,890 [INFO] 扫描公告...
+2026-02-25 16:05:44,697 [INFO] 公告扫描完成: 0 条提醒
+2026-02-25 16:05:44,697 [INFO] 检测大盘指数...
+2026-02-25 16:05:45,895 [INFO] 大盘状态: 多数偏多/多头+站上年线，建议仓位70-80%
+📊 持仓日报 2026-02-25 16:05
+
+💰 国金25万 总资产 24.99万
+   持仓 15.87万(63%) | 现金 9.15万(37%)
+   总盈亏 -6,127元 | 📈 今日 +315元
+
+━━━ 🏛️ 大盘仓位指引 ━━━
+   🟢上证指数 偏多 | 🟢沪深300 偏多 | 🟢创业板指 偏多
+   🟢创业板50 偏多 | 🟡科创50 回调中
+   大盘: 多数偏多/多头+站上年线
+   建议仓位: 70-80% | 当前: 63%
+   📈 仓位偏低，建议仓位70-80%，可加仓约2.9万
+   ⚠️ 加仓前提：有System A三重过滤通过的标的，不要为了加仓而买
+   年线: 5/5指数站上年线
+
+━━━ 💼 持仓明细 ━━━
+
+🔴 恒生科技ETF (513130) [指数ETF]
+   现价 0.670 | 成本 0.819 | -18.19% (-8,284元)
+   仓位 14.9% | 市值 3.73万 | 今日 -0.30%
+   🔴 均线空头排列 → 🔴 空头排列，建议清仓
+   ℹ️ 偏离MA20 -6.2% | MA60 -7.7%
+
+🔴 西大门 (605155) [成长股]
+   现价 19.200 | 成本 19.265 | -0.34% (-131元)
+   仓位 15.4% | 市值 3.84万 | 今日 -0.47%
+   止损: 固定16.38(17.2%) | 移动16.405(17.0%)
+   ℹ️ 高于增持均价16%
+   🔴 🔴 三重过滤复验不通过(成长股): ❌成长股利润负增长(最新季度增速-5%) → 成长股利润增速转负/放缓 → 林奇原则：增速下滑立即清仓
+
+🟡 北汽蓝谷 (600733) [困境反转]
+   现价 8.190 | 成本 8.189 | +0.02% (+3元)
+   仓位 8.2% | 市值 2.05万 | 今日 -1.09%
+   止损: 固定7.7(6.4%)
+   🟡 营收增速放缓(154%→57%) → 成长放缓，关注PEG变化
+      2025-09-30:+57% | 2025-06-30:+154% | 2025-03-31:+151% | 2024-12-31:+1%
+   ℹ️ 最新季度仍亏损（困境反转中） → 困境反转预期中的亏损，关注营收和毛利率趋势
+      2025-09-30: -34.74亿
+   ℹ️ 高于增持均价2%
+   ℹ️ ✅ 三重过滤复验通过(困境反转): 🟡困境反转试探期(营收+57%，毛利率连续3Q改善，PS=2.8)——高管增持+毛利率连续改善，试探建仓10% → 买入逻辑仍然成立
+
+🟢 渝农商行 (601077) [价值股]
+   现价 6.500 | 成本 6.477 | +0.36% (+69元)
+   仓位 7.8% | 市值 1.95万 | 今日 -0.31%
+   止损: 固定5.5(18.2%) | 移动5.525(17.6%)
+   ℹ️ ✅ 三重过滤复验通过(价值股): ✅价值股(金融)PE=4.9极低 → 买入逻辑仍然成立
+
+🟡 梅花生物 (600873) [周期股]
+   现价 11.330 | 成本 10.747 | +5.42% (+2,215元)
+   仓位 17.2% | 市值 4.31万 | 今日 +2.07%
+   止损: 固定9.13(24.1%) | 移动9.630(17.6%)
+   ℹ️ 🟢 利润拐点向上 → 周期反转信号，继续持有
+      2025-09-30:+14% | 2025-06-30:+25% | 2025-03-31:+42% | 2024-12-31:-13%
+   ℹ️ 毛利率下滑(24.6%→21.3%) → 利润在涨，毛利率下滑影响有限
+      2025-09-30:21.3% | 2025-06-30:23.2% | 2025-03-31:24.6%
+   🟡 ⚠️ 分类漂移：买入时=周期股，现在=价值股 → 股票性质可能已变，重新评估
+   ℹ️ ✅ 三重过滤复验通过(价值股): ✅价值股(消费)PE=10.6极低 → 买入逻辑仍然成立
+
+━━━ 📋 操作建议 ━━━
+   📈 仓位: 仓位偏低，建议仓位70-80%，可加仓约2.9万
+   ⚠️ 加仓前提：有System A三重过滤通过的标的，不要为了加仓而买
+   🔴 恒生科技ETF: 均线空头，清仓
+   🔴 西大门: 成长股利润增速转负/放缓 → 林奇原则：增速下滑立即清仓
+   🟡 北汽蓝谷: 成长放缓，关注PEG变化
+   🟡 梅花生物: 股票性质可能已变，重新评估
