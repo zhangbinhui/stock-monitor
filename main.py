@@ -743,16 +743,16 @@ def get_fundamental_data(stock_code: str, market_cap_yi: float = None, stock_nam
         if not result["industry"]:
             stock_name = result.get("stock_name") or ""
             name_industry_map = {
-                "银行": "银行", "商行": "银行", "农商": "银行", "信用社": "银行",
+                "银行": "银行", "商行": "银行", "农商": "银行", "信用社": "银行", "信托": "银行",
                 "证券": "证券", "保险": "保险", "人寿": "保险",
                 "地产": "房地产", "置业": "房地产", "置地": "房地产",
-                "水泥": "建材", "玻璃": "建材",
+                "水泥": "建材", "玻璃": "建材", "建材": "建材",
                 "钢铁": "钢铁", "特钢": "钢铁",
                 "煤炭": "煤炭", "煤业": "煤炭", "能源": "煤炭",
                 "石油": "石油", "石化": "化工", "化工": "化工", "化学": "化工",
                 "有色": "有色", "铝业": "有色", "铜业": "有色", "锂": "有色",
                 "电力": "电力", "发电": "电力", "水电": "电力",
-                "高速": "高速", "港口": "港口", "航运": "航运",
+                "高速": "高速", "港口": "港口", "上港": "港口", "航运": "航运",
                 "医药": "医药", "制药": "医药", "药业": "医药", "生物": "医药",
                 "食品": "食品", "饮料": "食品", "乳业": "食品", "酒": "白酒",
                 "养殖": "养殖", "牧业": "养殖", "猪": "养殖",
@@ -1633,8 +1633,8 @@ def calc_position_and_target(stock_type: str, fundamental_data: Dict, valuation_
             else:
                 position_tier = "轻仓"
                 position_pct = "10-15%"
-                target_return = f"10-{target_pct:.0f}%"
-                target_logic = f"PE={pe:.1f}→行业合理值{target_pe}，赚估值修复"
+                target_return = f"{target_pct*0.5:.0f}-{target_pct:.0f}%"
+                target_logic = f"PE={pe:.1f}→行业合理值{target_pe}即{target_pct:.0f}%，赚估值修复"
         elif pe >= sector_pe_target and pe <= sector_pe_target * 1.3:
             position_tier = "轻仓"
             position_pct = "5-10%"
@@ -2164,6 +2164,12 @@ def enrich_data_with_market_info(result: pd.DataFrame) -> pd.DataFrame:
 
         # 计算仓位分级和目标涨幅
         pos_target = calc_position_and_target(stock_type, fundamental_data, valuation_desc, _premium_rate)
+        # 估值不通过时，覆盖仓位为观望（避免估值🔴但仓位显示中仓的矛盾）
+        if not valuation_pass:
+            pos_target["position_tier"] = "观望"
+            pos_target["position_pct"] = "0%"
+            pos_target["target_return"] = "-"
+            pos_target["target_logic"] = "估值未通过"
 
         # 生成投资观点
         holding_data = {'salary_ratio': salary_ratio}
