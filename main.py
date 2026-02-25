@@ -1847,8 +1847,7 @@ def generate_investment_opinion(stock_name: str, fundamental_data: Dict, price_d
             triple_result = f"🟢 三重过滤通过 - 折价买入，{position_tier}{std_position}"
         else:
             triple_result = f"🟢 三重过滤通过 - {position_tier}{std_position}"
-        target_hint = f"，目标涨幅{target_return}" if target_return and target_return != "-" else ""
-        analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{premium_desc} → {position_tier}{std_position}{target_hint}。" + analysis
+        analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{premium_desc}。" + analysis
     elif filter1_pass and filter2_pass and filter3_neutral:
         recommendation = "🟡"
         # 溢价时仓位已在calc_position_and_target中降级
@@ -1876,18 +1875,17 @@ def generate_investment_opinion(stock_name: str, fundamental_data: Dict, price_d
         triple_result = "🔴 不满足买入条件"
         analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{premium_desc} → 不满足买入条件。" + analysis
 
-    # 综合操作建议（含目标涨幅）
-    target_hint = f"目标涨幅{target_return}（{target_logic}）" if target_return and target_return != "-" else ""
+    # 综合操作建议（仓位和涨幅由卡片独立行展示，此处不重复）
     if recommendation == "🟢" and premium_rate is not None and premium_rate < 0:
-        analysis += f" 💰操作建议：三重过滤通过，折价买入，{position_tier}{std_position}！{target_hint}"
+        analysis += f" 💰操作建议：三重过滤通过，折价买入！"
     elif recommendation == "🟢":
-        analysis += f" 💰操作建议：三重过滤通过，{position_tier}{std_position}！{target_hint}"
+        analysis += f" 💰操作建议：三重过滤通过"
     elif recommendation == "🟡" and premium_rate is not None and premium_rate > 0.10:
-        analysis += f" 💰操作建议：溢价偏高，可{position_tier}{std_position}或等回调到增持均价附近。{target_hint}"
+        analysis += f" 💰操作建议：溢价偏高，等回调到增持均价附近"
     elif recommendation == "🟡":
-        analysis += f" 💰操作建议：持有观望，等待信号完善。{target_hint}"
+        analysis += f" 💰操作建议：观望，等待信号完善"
     elif recommendation == "🔴":
-        analysis += " 💰操作建议：回避。"
+        analysis += " 💰操作建议：回避"
 
     return recommendation, analysis
 
@@ -2543,7 +2541,7 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
             </div>
             <div style="font-size:13px;color:#555;line-height:1.8;">
                 三重过滤 {triple_icons} | {s_type} | PE {pe_str} | 增持/年薪 {sr_str} | 溢价率 {premium_str} | 利润{p_trend}<br>
-                <span style="color:#333;font-weight:bold;">{advice}</span><br>
+                📊 {v_desc}<br>
                 💼 <b style="color:{pos_color};">{pos_tier} {pos_pct}</b>{target_line}
                 {"<br><span style='color:#888;font-size:11px;'>季度同比: " + p_detail + "</span>" if p_detail else ""}
             </div>
