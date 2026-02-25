@@ -578,13 +578,13 @@ def get_stock_price_data(stock_code: str, earliest_date: str = None) -> Dict:
         return {}
 
 
-def get_fundamental_data(stock_code: str, market_cap_yi: float = None) -> Dict:
+def get_fundamental_data(stock_code: str, market_cap_yi: float = None, stock_name: str = "") -> Dict:
     """获取基本面数据（同花顺财务摘要）"""
     result = {"revenue": None, "net_profit": None, "revenue_growth": None,
               "profit_growth": None, "roe": None, "pe_ratio": None, "pb_ratio": None,
               "prev_net_profit": None, "profit_trend": None, "industry": None,
               "gross_margin": None, "gross_margin_prev": None, "revenue_growth_recent": None,
-              "ps_ratio": None, "market_cap_yi_val": market_cap_yi}
+              "ps_ratio": None, "market_cap_yi_val": market_cap_yi, "stock_name": stock_name}
     try:
         # 从同花顺获取财务摘要（最可靠的接口）
         fin = ak.stock_financial_abstract_ths(symbol=stock_code, indicator="按年度")
@@ -737,8 +737,31 @@ def get_fundamental_data(stock_code: str, market_cap_yi: float = None) -> Dict:
                     break
         except Exception as e:
             log.warning(f"获取 {stock_code} 行业信息失败: {e}")
-            # 暂无良好的fallback方案获取行业信息
             result["industry"] = None
+
+        # 行业fallback：从股票名称推断（东方财富被墙时使用）
+        if not result["industry"]:
+            stock_name = result.get("stock_name") or ""
+            name_industry_map = {
+                "银行": "银行", "商行": "银行", "农商": "银行", "信用社": "银行",
+                "证券": "证券", "保险": "保险", "人寿": "保险",
+                "地产": "房地产", "置业": "房地产", "置地": "房地产",
+                "水泥": "建材", "玻璃": "建材",
+                "钢铁": "钢铁", "特钢": "钢铁",
+                "煤炭": "煤炭", "煤业": "煤炭", "能源": "煤炭",
+                "石油": "石油", "石化": "化工", "化工": "化工", "化学": "化工",
+                "有色": "有色", "铝业": "有色", "铜业": "有色", "锂": "有色",
+                "电力": "电力", "发电": "电力", "水电": "电力",
+                "高速": "高速", "港口": "港口", "航运": "航运",
+                "医药": "医药", "制药": "医药", "药业": "医药", "生物": "医药",
+                "食品": "食品", "饮料": "食品", "乳业": "食品", "酒": "白酒",
+                "养殖": "养殖", "牧业": "养殖", "猪": "养殖",
+            }
+            for kw, ind in name_industry_map.items():
+                if kw in stock_name:
+                    result["industry"] = ind
+                    log.info(f"  {stock_code} 行业fallback: 从名称'{stock_name}'推断为'{ind}'")
+                    break
 
         # PE/PB：从市值和财务数据计算
         total_market_cap = None
@@ -2050,7 +2073,7 @@ def enrich_data_with_market_info(result: pd.DataFrame) -> pd.DataFrame:
             log.info(f"  {stock_code} 实时价格: {rt['price']}（日K收盘: {old_price}）")
 
         # 获取基本面数据
-        fundamental_data = get_fundamental_data(stock_code, market_cap_yi=market_cap)
+        fundamental_data = get_fundamental_data(stock_code, market_cap_yi=market_cap, stock_name=stock_name)
 
         # 获取高管薪酬数据
         exec_salaries = get_executive_salaries(stock_code)
