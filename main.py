@@ -1460,7 +1460,7 @@ def evaluate_by_type(stock_type: str, fundamental_data: Dict) -> Tuple[bool, str
         
         # 分行业PE合理区间（林奇：同行业比较PE比绝对值更有意义）
         industry = fundamental_data.get("industry") or ""
-        if any(kw in industry for kw in ["银行", "保险"]):
+        if any(kw in industry for kw in ["银行", "保险", "货币金融", "金融服务", "证券"]):
             pe_low, pe_mid, pe_high = 6, 10, 15  # 金融股PE天然低
             sector = "金融"
         elif any(kw in industry for kw in ["地产", "房地产", "建筑"]):
@@ -1469,7 +1469,7 @@ def evaluate_by_type(stock_type: str, fundamental_data: Dict) -> Tuple[bool, str
         elif any(kw in industry for kw in ["白酒", "食品", "饮料", "医药", "消费"]):
             pe_low, pe_mid, pe_high = 15, 25, 35  # 消费股PE高是常态
             sector = "消费"
-        elif any(kw in industry for kw in ["电力", "公用", "高速", "港口", "水务"]):
+        elif any(kw in industry for kw in ["电力", "公用", "高速", "港口", "水务", "运输"]):
             pe_low, pe_mid, pe_high = 8, 15, 20  # 公用事业
             sector = "公用"
         else:
@@ -1607,7 +1607,7 @@ def calc_position_and_target(stock_type: str, fundamental_data: Dict, valuation_
     elif stock_type == "价值股":
         # 价值股目标：PE修复到行业合理水平
         industry = fundamental_data.get("industry") or ""
-        if any(kw in industry for kw in ["银行", "保险"]):
+        if any(kw in industry for kw in ["银行", "保险", "货币金融", "金融服务", "证券"]):
             sector_pe_target = 8   # 金融股目标PE
             sector_name = "金融"
         elif any(kw in industry for kw in ["地产", "房地产", "建筑"]):
@@ -1616,7 +1616,7 @@ def calc_position_and_target(stock_type: str, fundamental_data: Dict, valuation_
         elif any(kw in industry for kw in ["白酒", "食品", "饮料", "医药", "消费"]):
             sector_pe_target = 22  # 消费股目标PE
             sector_name = "消费"
-        elif any(kw in industry for kw in ["电力", "公用", "高速", "港口", "水务"]):
+        elif any(kw in industry for kw in ["电力", "公用", "高速", "港口", "水务", "运输"]):
             sector_pe_target = 12
             sector_name = "公用"
         else:
