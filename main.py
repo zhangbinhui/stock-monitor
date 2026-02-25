@@ -1231,29 +1231,64 @@ def evaluate_by_type(stock_type: str, fundamental_data: Dict) -> Tuple[bool, str
         return False, "❌基本面不合格(亏损)"
 
     if stock_type == "困境反转":
-        # 困境反转：用PS估值 + 营收增速 + 毛利率趋势
+        # 困境反转分级建仓：
+        # 观察期 → 不买
+        # 试探期（毛利率连续2季度改善）→ 10%仓位
+        # 确认期（毛利率转正 或 单季度盈利）→ 20%仓位
+        # 成熟期（连续2季度盈利）→ 升级为正常股票评估
         ps = fundamental_data.get("ps_ratio") or 0
         rev_g = fundamental_data.get("revenue_growth_recent") or fundamental_data.get("revenue_growth") or 0
         gm = fundamental_data.get("gross_margin_q_latest") or fundamental_data.get("gross_margin") or 0
         gm_prev = fundamental_data.get("gross_margin_q_prev") or fundamental_data.get("gross_margin_prev")
+        gm_trend = fundamental_data.get("gross_margin_q_trend") or []  # [(period, gm%), ...]
         gm_improving = gm_prev is not None and gm > gm_prev
-        debt_ratio = None  # 暂未提取，后续可加
+
+        # 判断毛利率连续改善季度数
+        gm_improving_quarters = 0
+        if len(gm_trend) >= 2:
+            for i in range(len(gm_trend) - 1):
+                if gm_trend[i][1] > gm_trend[i + 1][1]:
+                    gm_improving_quarters += 1
+                else:
+                    break
+
+        # 判断最近季度是否盈利
+        profit_trend_detail = fundamental_data.get("profit_trend_detail", "")
+        latest_profit = fundamental_data.get("net_profit")  # 年报净利润
+        # 检查最新季度扣非是否转正（从季度趋势数据推断）
+        latest_q_profitable = False
+        if profit_trend_detail and ":" in profit_trend_detail:
+            try:
+                first_q = profit_trend_detail.split("|")[0].strip()
+                pct_str = first_q.split(":")[1].strip().replace("%", "").replace("+", "")
+                # 如果最新季度同比大幅改善且基数为正，可能已盈利
+                # 这里简化：如果毛利率已转正，大概率接近盈利
+            except:
+                pass
 
         desc_parts = [f"营收+{rev_g:.0f}%"]
-        if gm_improving:
+        if gm_improving_quarters >= 2:
+            desc_parts.append(f"毛利率连续{gm_improving_quarters}Q改善")
+        elif gm_improving:
             desc_parts.append(f"毛利率{gm_prev:.1f}%→{gm:.1f}%↑")
         elif gm_prev is not None:
             desc_parts.append(f"毛利率{gm:.1f}%(未改善)")
         if ps > 0:
             desc_parts.append(f"PS={ps:.1f}")
-
         desc = "，".join(desc_parts)
 
-        # 困境反转不给买入信号，只标记"观察"
-        if rev_g > 30 and gm_improving and ps < 3:
-            return False, f"👀困境反转观察({desc})——等毛利率转正或单季度盈利再进场"
+        # === 分级判断 ===
+        if gm > 0 and rev_g > 20:
+            # 确认期：毛利率已转正 → 允许20%仓位
+            return True, f"🟢困境反转确认期({desc})——毛利率已转正，建仓20%"
+        elif gm_improving_quarters >= 2 and rev_g > 30 and ps < 5:
+            # 试探期：毛利率连续2季度改善 → 允许10%仓位
+            return True, f"🟡困境反转试探期({desc})——高管增持+毛利率连续改善，试探建仓10%"
+        elif rev_g > 30 and gm_improving:
+            # 观察期：营收高增长+毛利率有改善但不够连续
+            return False, f"👀困境反转观察({desc})——等毛利率连续改善再进场"
         elif rev_g > 30:
-            return False, f"👀困境反转观察({desc})——营收在增长但风险仍高"
+            return False, f"👀困境反转观察({desc})——营收在增长但毛利率未改善"
         else:
             return False, f"❌困境反转条件不足({desc})"
 
@@ -1385,11 +1420,25 @@ def generate_investment_opinion(stock_name: str, fundamental_data: Dict, price_d
 
     # 生成观点
     if stock_type == "困境反转":
-        recommendation = "🟡"
-        analysis = f"困境反转股：亏损但营收在增长，高管增持可能是对反转有信心。"
-        if is_strong_signal:
-            analysis += f"高管用{salary_ratio:.1f}倍年薪增持，对反转信心强。"
-        analysis += " ⚠️等毛利率转正或单季度盈利再进场，不建议现在买入。"
+        # 根据估值结果判断处于哪个阶段
+        if "确认期" in valuation_desc:
+            recommendation = "🟢"
+            analysis = f"困境反转确认期：毛利率已转正，反转逻辑成立。"
+            if is_strong_signal:
+                analysis += f"高管用{salary_ratio:.1f}倍年薪增持，信心极强。"
+            analysis += " 💰建仓20%（非三重过滤标准仓位30%，控制风险）。"
+        elif "试探期" in valuation_desc:
+            recommendation = "🟡"
+            analysis = f"困境反转试探期：毛利率连续改善，高管提前看到反转。"
+            if is_strong_signal:
+                analysis += f"高管用{salary_ratio:.1f}倍年薪增持，值得跟进。"
+            analysis += " 💰试探建仓10%（轻仓试水，等确认再加）。"
+        else:
+            recommendation = "🟡"
+            analysis = f"困境反转观察期：亏损但营收在增长，高管增持可能是对反转有信心。"
+            if is_strong_signal:
+                analysis += f"高管用{salary_ratio:.1f}倍年薪增持，对反转信心强。"
+            analysis += " ⚠️暂不建仓，等毛利率连续2季度改善再试探。"
     elif is_loss_company:
         recommendation = "🔴"
         analysis = f"公司持续亏损，高管增持可能是政治任务/配合维稳，信号强度大打折扣。"
@@ -1495,18 +1544,31 @@ def generate_investment_opinion(stock_name: str, fundamental_data: Dict, price_d
 
     filter_icons = f"{'✅' if filter1_pass else '❌'}{'✅' if filter2_pass else '❌'}{'✅' if filter3_pass else '❌'}"
 
+    # 困境反转的仓位上限（试探10%/确认20%，不是标准30%）
+    is_turnaround = stock_type == "困境反转"
+    if is_turnaround and "确认期" in valuation_desc:
+        turnaround_position = "20%"
+    elif is_turnaround and "试探期" in valuation_desc:
+        turnaround_position = "10%"
+    else:
+        turnaround_position = None
+
+    # 标准仓位
+    std_position = turnaround_position or "30%"
+
     # 三重过滤综合判断（覆盖之前的recommendation）
     if filter1_pass and filter2_pass and filter3_pass:
         recommendation = "🟢"
         if premium_rate is not None and premium_rate < 0:
-            triple_result = "🟢 三重过滤通过 - 折价买入，建仓30%"
+            triple_result = f"🟢 三重过滤通过 - 折价买入，建仓{std_position}"
         else:
-            triple_result = "🟢 三重过滤通过 - 建仓30%"
-        analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{premium_desc} → 建仓30%。" + analysis
+            triple_result = f"🟢 三重过滤通过 - 建仓{std_position}"
+        analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{premium_desc} → 建仓{std_position}。" + analysis
     elif filter1_pass and filter2_pass and filter3_neutral:
         recommendation = "🟡"
+        half_pos = f"{int(std_position.replace('%', '')) // 2}%"
         if premium_rate is not None and premium_rate > 0.10:
-            triple_result = "🟡 溢价偏高，建仓15%或等回调"
+            triple_result = f"🟡 溢价偏高，建仓{half_pos}或等回调"
         else:
             triple_result = "🟡 等待确认"
         analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{premium_desc} → 谨慎建仓或等回调。" + analysis
@@ -1515,9 +1577,15 @@ def generate_investment_opinion(stock_name: str, fundamental_data: Dict, price_d
         triple_result = "🔴 溢价过高，不追"
         analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{premium_desc} → 涨太多了不追。" + analysis
     elif filter1_pass and not filter2_pass and filter3_pass:
-        recommendation = "🟡"
-        triple_result = "⚠️ 价格合适但基本面存疑"
-        analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{premium_desc} → 基本面存疑，观望。" + analysis
+        # 困境反转观察期：基本面不通过但价格合适
+        if is_turnaround and "观察" in valuation_desc:
+            recommendation = "🟡"
+            triple_result = "👀 困境反转观察期，暂不建仓"
+            analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{premium_desc} → 观察中，等毛利率连续改善。" + analysis
+        else:
+            recommendation = "🟡"
+            triple_result = "⚠️ 价格合适但基本面存疑"
+            analysis = f"【三重{filter_icons}】高管增持+{valuation_desc}+{premium_desc} → 基本面存疑，观望。" + analysis
     else:
         recommendation = "🔴"
         triple_result = "🔴 不满足买入条件"
@@ -1525,11 +1593,11 @@ def generate_investment_opinion(stock_name: str, fundamental_data: Dict, price_d
 
     # 综合操作建议
     if recommendation == "🟢" and premium_rate is not None and premium_rate < 0:
-        analysis += " 💰操作建议：三重过滤通过，折价买入，建仓30%！"
+        analysis += f" 💰操作建议：三重过滤通过，折价买入，建仓{std_position}！"
     elif recommendation == "🟢":
-        analysis += " 💰操作建议：三重过滤通过，建仓30%！"
+        analysis += f" 💰操作建议：三重过滤通过，建仓{std_position}！"
     elif recommendation == "🟡" and premium_rate is not None and premium_rate > 0.10:
-        analysis += " 💰操作建议：溢价偏高，可建仓15%或等回调到增持均价附近。"
+        analysis += f" 💰操作建议：溢价偏高，可建仓{int(std_position.replace('%', '')) // 2}%或等回调到增持均价附近。"
     elif recommendation == "🟡":
         analysis += " 💰操作建议：持有观望，等待信号完善。"
     elif recommendation == "🔴":

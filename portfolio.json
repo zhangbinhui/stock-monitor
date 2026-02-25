@@ -32,7 +32,7 @@
           "insider_avg_price": 16.54,
           "stop_method": "price",
           "stop_price": 16.38,
-          "high_price": 19.29
+          "high_price": 19.3
         },
         {
           "code": "600873",
@@ -58,9 +58,21 @@
     "stock_sell_by": "fundamental",
     "trailing_stop_pct": 15,
     "take_profit_rules": [
-      {"gain_pct": 30, "sell_pct": 33, "note": "涨30%减仓1/3锁定利润"},
-      {"gain_pct": 50, "sell_pct": 33, "note": "涨50%再减1/3"},
-      {"gain_pct": -1, "sell_pct": 0, "note": "剩余用移动止损保护"}
+      {
+        "gain_pct": 30,
+        "sell_pct": 33,
+        "note": "涨30%减仓1/3锁定利润"
+      },
+      {
+        "gain_pct": 50,
+        "sell_pct": 33,
+        "note": "涨50%再减1/3"
+      },
+      {
+        "gain_pct": -1,
+        "sell_pct": 0,
+        "note": "剩余用移动止损保护"
+      }
     ]
   }
 }

@@ -35,6 +35,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 PORTFOLIO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portfolio.json")
 ALERT_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "alert_state.json")
+SIGNAL_TRACK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signal_track.json")
 
 # Telegram 配置（从环境变量读取）
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
@@ -57,6 +58,45 @@ def load_alert_state() -> Dict:
 def save_alert_state(state: Dict):
     with open(ALERT_STATE_FILE, 'w') as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+
+
+def load_signal_track() -> Dict:
+    """加载信号追踪状态（记录danger信号首次出现日期和累计天数）"""
+    if os.path.exists(SIGNAL_TRACK_FILE):
+        with open(SIGNAL_TRACK_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+
+def save_signal_track(track: Dict):
+    with open(SIGNAL_TRACK_FILE, 'w') as f:
+        json.dump(track, f, ensure_ascii=False, indent=2)
+
+
+def update_signal_track(code: str, signal_key: str, is_active: bool, track: Dict) -> int:
+    """
+    更新信号追踪，返回信号持续天数
+    signal_key: 如 "空头排列", "触及止损" 等
+    """
+    key = f"{code}_{signal_key}"
+    today = datetime.now().strftime('%Y-%m-%d')
+
+    if is_active:
+        if key not in track:
+            track[key] = {"first_date": today, "last_date": today, "days": 1}
+        else:
+            first = track[key]["first_date"]
+            days = (datetime.strptime(today, '%Y-%m-%d') - datetime.strptime(first, '%Y-%m-%d')).days + 1
+            # 只算交易日（粗略：总天数 * 5/7）
+            trading_days = max(1, int(days * 5 / 7))
+            track[key]["last_date"] = today
+            track[key]["days"] = trading_days
+        return track[key]["days"]
+    else:
+        # 信号消失，清除追踪
+        if key in track:
+            del track[key]
+        return 0
 
 
 def get_realtime_prices(codes: List[str]) -> Dict[str, Dict]:
@@ -758,6 +798,46 @@ def analyze_portfolio(include_announcements=True) -> Tuple[str, List[Dict]]:
             'stop_price': h.get('stop_price'), 'trailing_stop': _trailing,
             'stock_type': s_type,
         })
+
+    # === 信号不执行追踪 ===
+    signal_track = load_signal_track()
+    for r in results:
+        code = r['code']
+        is_danger = r['advice_icon'] == "🔴"
+        signal_key = r['advice'] if is_danger else ""
+
+        if is_danger and signal_key:
+            days = update_signal_track(code, signal_key, True, signal_track)
+            if days >= 3:
+                # 计算持有期间的额外亏损
+                daily_loss = r['market_value'] * abs(r['change_pct']) / 100
+                r['unexecuted_days'] = days
+                # 升级提醒语气
+                if days >= 10:
+                    r['signals'].append({
+                        "signal": f"‼️ 此信号已持续{days}个交易日未执行！",
+                        "level": "danger",
+                        "action": f"拖延不是策略。信号出了就要执行，否则系统等于摆设。"
+                    })
+                elif days >= 5:
+                    r['signals'].append({
+                        "signal": f"⚠️ 此信号已连续{days}个交易日",
+                        "level": "danger",
+                        "action": f"每天不执行都在承担额外风险，请尽快决策"
+                    })
+                elif days >= 3:
+                    r['signals'].append({
+                        "signal": f"📅 此信号已持续{days}个交易日",
+                        "level": "warning",
+                        "action": "建议尽快执行或明确调整策略"
+                    })
+        else:
+            # 清除该股票的danger追踪
+            keys_to_remove = [k for k in signal_track if k.startswith(f"{code}_")]
+            for k in keys_to_remove:
+                del signal_track[k]
+
+    save_signal_track(signal_track)
 
     # 公告扫描
     ann_alerts = []
