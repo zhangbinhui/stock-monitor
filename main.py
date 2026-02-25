@@ -348,23 +348,9 @@ def filter_st_stocks(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_market_cap(stock_code: str) -> Optional[float]:
-    """获取公司市值（亿元）"""
-    try:
-        # 优先尝试原方案 (可能用的是不同域名，还能用)
-        info = ak.stock_individual_info_em(symbol=stock_code)
-        for _, row in info.iterrows():
-            if row['item'] == '总市值':
-                val = row['value']
-                if isinstance(val, (int, float)):
-                    return val / 1e8
-                else:
-                    return float(str(val).replace(',', '')) / 1e8
-        log.warning(f"{stock_code} 原方案未找到总市值字段")
-        return None
-    except Exception as e:
-        log.warning(f"获取 {stock_code} 市值失败（原方案）: {e}")
-
-        # Fallback: 用日K线数据估算市值 = 最新收盘价 * 总股本
+    """获取公司市值（亿元）— 用日K线估算（push2已废弃）"""
+    # push2.eastmoney.com 已被封，直接走日K线估算
+    if True:
         try:
             log.info(f"  尝试用日K线数据估算 {stock_code} 市值")
             # 转换股票代码格式
@@ -728,18 +714,10 @@ def get_fundamental_data(stock_code: str, market_cap_yi: float = None, stock_nam
                             result["profit_trend"] = "持平"
                         result["profit_trend_detail"] = "年报对比"
 
-        # 获取行业信息
-        try:
-            info_industry = ak.stock_individual_info_em(symbol=stock_code)
-            for _, row in info_industry.iterrows():
-                if row['item'] == '行业':
-                    result["industry"] = str(row['value'])
-                    break
-        except Exception as e:
-            log.warning(f"获取 {stock_code} 行业信息失败: {e}")
-            result["industry"] = None
+        # 获取行业信息（push2已废弃，直接用巨潮概况）
+        result["industry"] = None
 
-        # 行业fallback 1: 巨潮概况接口（不走push2）
+        # 行业fallback 1: 巨潮概况接口
         if not result["industry"]:
             try:
                 profile_df = ak.stock_profile_cninfo(symbol=stock_code)
@@ -782,18 +760,7 @@ def get_fundamental_data(stock_code: str, market_cap_yi: float = None, stock_nam
         total_market_cap = None
         current_price_val = None
 
-        # 优先尝试从 stock_individual_info_em 获取
-        try:
-            info = ak.stock_individual_info_em(symbol=stock_code)
-            for _, row in info.iterrows():
-                if row['item'] == '总市值':
-                    val = row['value']
-                    total_market_cap = float(val) if isinstance(val, (int, float)) else None
-                elif row['item'] == '最新':
-                    current_price_val = float(row['value']) if isinstance(row['value'], (int, float)) else None
-        except Exception as e:
-            log.warning(f"获取 {stock_code} 基本信息失败: {e}")
-        
+        # push2已废弃，直接用日K线估算市值
         # Fallback: 用 get_market_cap 的日K线估算结果
         if total_market_cap is None and market_cap_yi is not None:
             total_market_cap = market_cap_yi * 1e8  # 亿元 → 元
@@ -1234,6 +1201,7 @@ CYCLICAL_INDUSTRY_KEYWORDS = [
     "化工", "建材", "水泥", "煤炭", "钢铁", "有色", "券商", "证券",
     "养殖", "猪", "石油", "天然气", "航运", "船舶", "电力", "发电",
     "食品制造", "农副食品",  # 大宗农产品加工（味精/氨基酸等）属于周期
+    "非金属矿物",  # 水泥/玻璃/建材（巨潮分类：非金属矿物制品业）
 ]
 
 
