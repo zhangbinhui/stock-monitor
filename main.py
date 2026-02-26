@@ -133,6 +133,7 @@ def get_realtime_prices(codes: List[str]) -> Dict[str, Dict]:
 def get_index_volume_price_data() -> List[Dict]:
     """获取指数ETF量价数据（陈老师量价法）"""
     ETF_LIST = [
+        {"name": "上证指数", "code": "sh000001", "type": "index"},
         {"name": "沪深300ETF", "code": "510300"},
         {"name": "中证500ETF", "code": "512500"},
         {"name": "创业板ETF", "code": "159957"},
@@ -148,41 +149,58 @@ def get_index_volume_price_data() -> List[Dict]:
         try:
             log.info(f"获取ETF数据: {etf['name']} ({etf['code']})")
             df = None
+            is_index = etf.get('type') == 'index'
 
-            # ETF代码加前缀：5/6开头=sh，0/1/3开头=sz（159xxx是深交所ETF）
-            etf_code = etf['code']
-            if etf_code.startswith(('5', '6')):
-                etf_symbol = f'sh{etf_code}'
-            else:
-                etf_symbol = f'sz{etf_code}'
-
-            # 优先使用 fund_etf_hist_sina（新浪源，ETF专用，最稳定）
-            try:
-                log.info(f"  尝试使用新浪源: {etf_symbol}")
-                df = ak.fund_etf_hist_sina(symbol=etf_symbol)
-                if df is not None and not df.empty:
-                    # 新浪源列名：date, open, high, low, close, volume, amount
-                    df.rename(columns={
-                        'date': '日期',
-                        'close': '收盘',
-                        'volume': '成交量'
-                    }, inplace=True)
-                    log.info(f"  新浪源获取成功: {len(df)} 条数据")
-            except Exception as e:
-                log.warning(f"  新浪源失败: {e}")
-                df = None
-
-            # 备选：东财源
-            if df is None or df.empty:
+            if is_index:
+                # 指数数据：使用 stock_zh_index_daily
                 try:
-                    log.info(f"  尝试使用东财源: {etf_code}")
-                    df = ak.fund_etf_hist_em(symbol=etf_code, period="daily",
-                                          start_date=start_date, end_date=end_date, adjust="qfq")
+                    log.info(f"  获取指数数据: {etf['code']}")
+                    df = ak.stock_zh_index_daily(symbol=etf['code'])
                     if df is not None and not df.empty:
-                        log.info(f"  东财源获取成功: {len(df)} 条数据")
+                        df.rename(columns={
+                            'date': '日期',
+                            'close': '收盘',
+                            'volume': '成交量'
+                        }, inplace=True)
+                        log.info(f"  指数数据获取成功: {len(df)} 条数据")
                 except Exception as e:
-                    log.warning(f"  东财源失败: {e}")
+                    log.warning(f"  指数数据获取失败: {e}")
                     df = None
+            else:
+                # ETF代码加前缀：5/6开头=sh，0/1/3开头=sz（159xxx是深交所ETF）
+                etf_code = etf['code']
+                if etf_code.startswith(('5', '6')):
+                    etf_symbol = f'sh{etf_code}'
+                else:
+                    etf_symbol = f'sz{etf_code}'
+
+                # 优先使用 fund_etf_hist_sina（新浪源，ETF专用，最稳定）
+                try:
+                    log.info(f"  尝试使用新浪源: {etf_symbol}")
+                    df = ak.fund_etf_hist_sina(symbol=etf_symbol)
+                    if df is not None and not df.empty:
+                        # 新浪源列名：date, open, high, low, close, volume, amount
+                        df.rename(columns={
+                            'date': '日期',
+                            'close': '收盘',
+                            'volume': '成交量'
+                        }, inplace=True)
+                        log.info(f"  新浪源获取成功: {len(df)} 条数据")
+                except Exception as e:
+                    log.warning(f"  新浪源失败: {e}")
+                    df = None
+
+                # 备选：东财源
+                if df is None or df.empty:
+                    try:
+                        log.info(f"  尝试使用东财源: {etf_code}")
+                        df = ak.fund_etf_hist_em(symbol=etf_code, period="daily",
+                                              start_date=start_date, end_date=end_date, adjust="qfq")
+                        if df is not None and not df.empty:
+                            log.info(f"  东财源获取成功: {len(df)} 条数据")
+                    except Exception as e:
+                        log.warning(f"  东财源失败: {e}")
+                        df = None
 
             if df is None or df.empty:
                 log.warning(f"  {etf['code']} 所有数据源都无数据")
@@ -283,22 +301,56 @@ def get_index_volume_price_data() -> List[Dict]:
                 "vol_60": vol_60,
                 "vol_percentile": vol_percentile,
                 "signal": signal,
+                "is_index": is_index,
             })
             log.info(f"  {etf['name']}: 价格={current_price:.3f}, 涨跌={change_pct:.2f}%, {ma_arrangement}, 偏离MA20={bias20:+.1f}%, 量分位={vol_percentile:.0f}%, 量价={signal}, 均线={ma_signal}")
         except Exception as e:
             log.warning(f"获取 {etf['name']} ({etf['code']}) 失败: {e}")
 
-    # 用实时行情覆盖ETF当前价
+    # 用实时行情覆盖当前价
     if results:
-        etf_codes = [r['code'] for r in results]
-        rt_prices = get_realtime_prices(etf_codes)
-        for r in results:
-            if r['code'] in rt_prices:
-                rt = rt_prices[r['code']]
-                r['current_price'] = rt['price']
-                r['change_pct'] = rt['change_pct']
-                r['is_realtime'] = True
-                log.info(f"  {r['name']} 实时价格: {rt['price']}")
+        # ETF用纯数字代码
+        etf_codes = [r['code'] for r in results if not r.get('is_index')]
+        # 指数用sh/sz前缀代码
+        index_codes = [r['code'] for r in results if r.get('is_index')]
+        all_rt_codes = etf_codes + index_codes
+        if all_rt_codes:
+            # 构造腾讯行情查询
+            qq_codes = []
+            for code in all_rt_codes:
+                if code.startswith(('sh', 'sz')):
+                    qq_codes.append(code)  # 指数已有前缀
+                elif code.startswith(('5', '6')):
+                    qq_codes.append(f'sh{code}')
+                else:
+                    qq_codes.append(f'sz{code}')
+            try:
+                url = f"http://qt.gtimg.cn/q={','.join(qq_codes)}"
+                resp = requests.get(url, timeout=5, proxies={'http': '', 'https': ''})
+                for line in resp.text.strip().split(';'):
+                    line = line.strip()
+                    if not line or '~' not in line:
+                        continue
+                    parts = line.split('~')
+                    if len(parts) < 33:
+                        continue
+                    rt_code = parts[2]  # 纯数字代码
+                    try:
+                        price = float(parts[3]) if parts[3] else None
+                        change_pct_val = float(parts[32]) if parts[32] else None
+                        if price and price > 0:
+                            # 匹配回 results（指数code含前缀，ETF是纯数字）
+                            for r in results:
+                                match_code = r['code'].replace('sh', '').replace('sz', '') if r.get('is_index') else r['code']
+                                if match_code == rt_code:
+                                    r['current_price'] = price
+                                    r['change_pct'] = change_pct_val
+                                    r['is_realtime'] = True
+                                    log.info(f"  {r['name']} 实时价格: {price}")
+                    except (ValueError, IndexError):
+                        continue
+            except Exception as e:
+                log.warning(f"获取实时行情失败: {e}")
 
     return results
 
