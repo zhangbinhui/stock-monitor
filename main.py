@@ -324,20 +324,33 @@ def get_index_volume_price_data() -> List[Dict]:
                     qq_codes.append(f'sh{code}')
                 else:
                     qq_codes.append(f'sz{code}')
+            # 同时查深证成指(sz399001)用于计算两市成交额
+            if 'sh000001' in qq_codes and 'sz399001' not in qq_codes:
+                qq_codes.append('sz399001')
             try:
                 url = f"http://qt.gtimg.cn/q={','.join(qq_codes)}"
                 resp = requests.get(url, timeout=5, proxies={'http': '', 'https': ''})
+                sz_turnover = 0  # 深证成交额(万元)
+                sh_turnover = 0  # 上证成交额(万元)
                 for line in resp.text.strip().split(';'):
                     line = line.strip()
                     if not line or '~' not in line:
                         continue
                     parts = line.split('~')
-                    if len(parts) < 33:
+                    if len(parts) < 38:
                         continue
                     rt_code = parts[2]  # 纯数字代码
                     try:
                         price = float(parts[3]) if parts[3] else None
                         change_pct_val = float(parts[32]) if parts[32] else None
+                        turnover = float(parts[37]) if parts[37] else 0  # 成交额(万元)
+
+                        # 收集两市成交额
+                        if rt_code == '000001':
+                            sh_turnover = turnover
+                        elif rt_code == '399001':
+                            sz_turnover = turnover
+
                         if price and price > 0:
                             # 匹配回 results（指数code含前缀，ETF是纯数字）
                             for r in results:
@@ -349,6 +362,14 @@ def get_index_volume_price_data() -> List[Dict]:
                                     log.info(f"  {r['name']} 实时价格: {price}")
                     except (ValueError, IndexError):
                         continue
+
+                # 两市成交额写入上证指数数据
+                if sh_turnover > 0 or sz_turnover > 0:
+                    total_turnover = (sh_turnover + sz_turnover) / 1e8  # 万元 -> 万亿
+                    for r in results:
+                        if r.get('is_index') and r['code'] == 'sh000001':
+                            r['market_turnover'] = total_turnover
+                            log.info(f"  两市成交额: {total_turnover:.2f}万亿 (沪{sh_turnover/1e4:.0f}亿 + 深{sz_turnover/1e4:.0f}亿)")
             except Exception as e:
                 log.warning(f"获取实时行情失败: {e}")
 
@@ -2377,9 +2398,7 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
                 <td style="{cell_center_style};color:{ma_arr_color};">{ma_sig}</td>
                 <td style="{cell_right_style}">{bias20_val:+.1f}%</td>
                 <td style="{cell_right_style}">{bias60_val:+.1f}%</td>
-                <td style="{cell_right_style}">{item['vol_20']/10000:.2f}</td>
-                <td style="{cell_right_style}">{item['vol_60']/10000:.2f}</td>
-                <td style="{cell_center_style};color:{vol_pct_color};">{vol_pct_str}</td>
+                {"<td colspan='3' style='" + cell_center_style + ";font-weight:bold;color:#e67e22;font-size:15px;'>两市成交额: " + f"{item['market_turnover']:.2f}万亿</td>" if item.get('market_turnover') else f"<td style='{cell_right_style}'>{item['vol_20']/10000:.2f}</td><td style='{cell_right_style}'>{item['vol_60']/10000:.2f}</td><td style='{cell_center_style};color:{vol_pct_color};'>{vol_pct_str}</td>"}
                 <td style="{cell_center_style}">{item['signal']}</td>
             </tr>"""
 
