@@ -22,13 +22,12 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ---- 股票池参数 ----
-MIN_MARKET_CAP = 100e8          # 最低市值（元），100亿
+MIN_MARKET_CAP = 50e8           # 最低市值（元），50亿
 MAX_PRICE_RATIO_DEFAULT = 1/3   # 默认：当前价 < 1年高点 × 1/3（回撤2/3）
 # 市值越大，回撤要求越低：(市值下限, price_ratio)
 MARKET_CAP_TIERS = [
-    (1000e8, 1/2),   # 1000亿以上，回撤1/2即可
-    (500e8,  2/5),   # 500亿以上，回撤3/5
-    (100e8,  1/3),   # 100亿以上，回撤2/3
+    (100e8, 1/2),   # 100亿以上，回撤1/2即可
+    (50e8,  1/3),   # 50亿以上，回撤2/3
 ]
 
 # ---- 回测参数 ----
@@ -68,8 +67,8 @@ def build_stock_pool(date, min_cap=MIN_MARKET_CAP, tiers=MARKET_CAP_TIERS):
     print(f"全市场: {len(all_codes)} 只")
 
     # 过滤ST、停牌、次新股(上市<1年)
-    one_year_ago = (pd.to_datetime(date) - timedelta(days=365)).strftime('%Y-%m-%d')
-    valid = all_stocks[all_stocks['start_date'] <= pd.to_datetime(one_year_ago)]
+    one_year_ago = (pd.to_datetime(date) - timedelta(days=365)).date()
+    valid = all_stocks[all_stocks['start_date'] <= one_year_ago]
     valid_codes = [c for c in valid.index if not get_security_info(c).display_name.startswith('ST')
                    and not get_security_info(c).display_name.startswith('*ST')]
 
