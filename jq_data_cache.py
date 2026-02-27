@@ -131,25 +131,34 @@ def step_pool():
     
     print(f"市值≥{MIN_MARKET_CAP/1e8*0.5:.0f}亿: {len(candidate_codes)} 只")
 
-    # 4. 批量下载日K线
+    # 4. 批量下载日K线（支持分批，跨天累积）
     # 需要从 DATA_START 往前推250天算滚动高点
     daily_start = (pd.to_datetime(DATA_START) - timedelta(days=400)).strftime('%Y-%m-%d')
     print(f"\n下载日K线 ({daily_start} ~ {DATA_END})...")
     
-    # 预估额度：每只约500条 × 候选数
-    est_rows = len(candidate_codes) * 500
+    # 统计已缓存数量，只预估未缓存的额度
+    already_cached = sum(1 for c in candidate_codes 
+                         if os.path.exists(os.path.join(DAILY_DIR, f"{c.replace('.', '_')}.parquet")))
+    to_download_count = len(candidate_codes) - already_cached
+    est_rows = to_download_count * 500
+    print(f"总候选: {len(candidate_codes)} 只, 已缓存: {already_cached}, 待下载: {to_download_count}")
     print(f"预估消耗: {est_rows:,} 条")
     
-    if not check_quota(est_rows):
-        print("请明天再试")
+    if to_download_count == 0:
+        print("日K线全部已缓存 ✅")
+    elif not check_quota(500):  # 只要还有最少1只的额度就继续
+        print("额度不足，请明天再试")
         return
 
     pool_calendar = {}
     stock_info = {}
     downloaded = 0
     cached = 0
+    quota_exhausted = False
 
     for i in range(0, len(candidate_codes), 50):
+        if quota_exhausted:
+            break
         batch = candidate_codes[i:i+50]
 
         for code in batch:
@@ -159,15 +168,30 @@ def step_pool():
                 df = pd.read_parquet(cache_file)
                 cached += 1
             else:
+                # 每20只检查一次额度
+                if downloaded > 0 and downloaded % 20 == 0:
+                    remaining = jq.get_query_count()['spare']
+                    if remaining < 1000:
+                        print(f"\n  ⚠️ 额度不足({remaining:,}), 已下载{downloaded}只, 明天继续")
+                        quota_exhausted = True
+                        break
+                
                 try:
                     df = jq.get_price(code, start_date=daily_start, end_date=DATA_END,
                                       frequency='daily',
                                       fields=['open', 'high', 'low', 'close', 'volume', 'pre_close'])
-                    if df is None or df.empty:
+                    if df is None or len(df) == 0:
+                        if downloaded == 0 and cached == 0:
+                            # 第一只就失败，打印调试信息
+                            print(f"  ⚠️ {code} 返回空数据: type={type(df)}, 可能是试用账号数据范围限制")
                         continue
                     df.to_parquet(cache_file)
                     downloaded += 1
+                    if downloaded <= 3:
+                        print(f"  ✅ {code}: {len(df)}条 ({df.index[0]} ~ {df.index[-1]})")
                 except Exception as e:
+                    if downloaded == 0 and cached == 0:
+                        print(f"  ❌ {code} 异常: {e}")
                     continue
 
             if len(df) < 300:
@@ -210,7 +234,13 @@ def step_pool():
         done = min(i + 50, len(candidate_codes))
         print(f"  [{done}/{len(candidate_codes)}] 入池{len(pool_calendar)}只 | 新下载{downloaded} 已缓存{cached}")
 
-    # 保存
+    # 保存（即使没全部下完也保存进度，下次接着来）
+    processed = downloaded + cached
+    total = len(candidate_codes)
+    if quota_exhausted:
+        print(f"\n⏸️ 额度用完，已处理 {processed}/{total} 只 ({processed*100//total}%)")
+        print(f"   明天凌晨0:30自动继续")
+    
     with open(POOL_FILE, 'w', encoding='utf-8') as f:
         json.dump({'pool_calendar': pool_calendar, 'stock_info': stock_info}, f, ensure_ascii=False, indent=2)
 

@@ -1,0 +1,127 @@
+{
+  "southbound_flow": {
+    "data": {
+      "date": "2026-02-26",
+      "daily_net": -73.66,
+      "sum_5d": 164.95,
+      "cumulative": 5.25
+    },
+    "timestamp": 1772178375.425007
+  },
+  "report_disclosure_605155": {
+    "data": {
+      "report_type": "2025年报",
+      "scheduled_date": "2026-03-20",
+      "actual_date": null,
+      "is_published": false
+    },
+    "timestamp": 1772178375.907557
+  },
+  "monthly_sales_600733": {
+    "data": {
+      "monthly_data": [
+        {
+          "period": "2025-08",
+          "year": 2025,
+          "month": 8,
+          "production": 10587,
+          "prod_yoy": "-15.13%",
+          "sales": 13530,
+          "sales_yoy": "3.47%"
+        },
+        {
+          "period": "2025-09",
+          "year": 2025,
+          "month": 9,
+          "production": 20045,
+          "prod_yoy": "54.26%",
+          "sales": 20539,
+          "sales_yoy": "30.15%"
+        },
+        {
+          "period": "2025-10",
+          "year": 2025,
+          "month": 10,
+          "production": 29382,
+          "prod_yoy": "137.26%",
+          "sales": 30542,
+          "sales_yoy": "112.02%"
+        },
+        {
+          "period": "2025-11",
+          "year": 2025,
+          "month": 11,
+          "production": 31935,
+          "prod_yoy": "180.57%",
+          "sales": 32328,
+          "sales_yoy": "112.71%"
+        },
+        {
+          "period": "2025-12",
+          "year": 2025,
+          "month": 12,
+          "production": 35581,
+          "prod_yoy": "208.84%",
+          "sales": 35205,
+          "sales_yoy": "114.56%"
+        },
+        {
+          "period": "2026-01",
+          "year": 2026,
+          "month": 1,
+          "production": 11169,
+          "prod_yoy": "20.84%",
+          "sales": 8073,
+          "sales_yoy": "11.83%"
+        }
+      ],
+      "latest_period": "2026-01",
+      "latest_sales": 8073,
+      "latest_sales_yoy": "11.83%",
+      "latest_production": 11169,
+      "mom_change": -77.1,
+      "prev_period": "2025-12",
+      "prev_sales": 35205,
+      "trend": "波动",
+      "above_10k": false,
+      "gap_to_10k": 1927
+    },
+    "timestamp": 1772178377.991943
+  },
+  "report_disclosure_600733": {
+    "data": {
+      "report_type": "2025年报",
+      "scheduled_date": "2026-04-24",
+      "actual_date": null,
+      "is_published": false
+    },
+    "timestamp": 1772178378.232353
+  },
+  "report_disclosure_601077": {
+    "data": {
+      "report_type": "2025年报",
+      "scheduled_date": "2026-03-26",
+      "actual_date": null,
+      "is_published": false
+    },
+    "timestamp": 1772178378.495338
+  },
+  "commodity_玉米": {
+    "data": {
+      "price": 2342.0,
+      "unit": "元/吨",
+      "change_30d": 2.7,
+      "date": "2026-02-26"
+    },
+    "timestamp": 1772178378.873887
+  },
+  "report_disclosure_600873": {
+    "data": {
+      "report_type": "2025年报",
+      "scheduled_date": "2026-04-22",
+      "actual_date": null,
+      "is_published": false
+    },
+    "timestamp": 1772178379.11427
+  }
+}

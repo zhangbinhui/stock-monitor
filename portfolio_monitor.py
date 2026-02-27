@@ -968,7 +968,22 @@ def analyze_portfolio(include_announcements=True) -> Tuple[str, List[Dict]]:
             'signals': signals, 'advice': advice, 'advice_icon': advice_icon,
             'stop_price': h.get('stop_price'), 'trailing_stop': _trailing,
             'stock_type': s_type,
+            'next_catalyst': h.get('next_catalyst', ''),
+            'core_track': h.get('core_track', ''),
+            'decision_override': h.get('decision_override', ''),
+            '_holding_config': h,  # 传入完整配置给指标引擎
         })
+
+    # === 动态核心指标 ===
+    try:
+        from core_indicators import IndicatorEngine
+        indicator_engine = IndicatorEngine()
+        for r in results:
+            h_config = r.get('_holding_config', {})
+            if h_config:
+                r['core_indicators'] = indicator_engine.generate_indicators(h_config)
+    except Exception as e:
+        log.warning(f"核心指标引擎异常: {e}")
 
     # === 信号不执行追踪 ===
     signal_track = load_signal_track()
@@ -1211,6 +1226,27 @@ def format_report(account, results, total_mv, total_pnl, today_pnl, cash_pct, an
             if s.get('detail'):
                 lines.append(f"      <i>{s['detail']}</i>")
 
+        # 决策覆盖（替代系统建议）
+        if r.get('decision_override'):
+            lines.append(f"   📌 <b>决策：</b>{r['decision_override']}")
+
+        # 动态核心指标（优先）或静态跟踪信息（fallback）
+        core_indicators = r.get('core_indicators', [])
+        if core_indicators:
+            for ind in core_indicators:
+                icon = ind.get('icon', '🔍')
+                text = ind.get('text', '')
+                lines.append(f"   {icon} {text}")
+        else:
+            # fallback: 静态字段
+            extra = []
+            if r.get('core_track'):
+                extra.append(f"跟踪: {r['core_track']}")
+            if r.get('next_catalyst'):
+                extra.append(f"催化: {r['next_catalyst']}")
+            if extra:
+                lines.append(f"   🔍 {' | '.join(extra)}")
+
     # 操作建议汇总
     lines.append("")
     actions = [r for r in results if r['advice_icon'] != "🟢"]
@@ -1221,7 +1257,10 @@ def format_report(account, results, total_mv, total_pnl, today_pnl, cash_pct, an
         if pos_guide and pos_guide.get('suggestion_icon') != "✅":
             lines.append(f"   {pos_guide['suggestion_icon']} 仓位: {pos_guide['suggestion']}")
         for r in actions:
-            lines.append(f"   {r['advice_icon']} {r['name']}: {r['advice']}")
+            if r.get('decision_override'):
+                lines.append(f"   ⏸️ {r['name']}: {r['decision_override']}")
+            else:
+                lines.append(f"   {r['advice_icon']} {r['name']}: {r['advice']}")
         if ann_alerts:
             for a in ann_alerts:
                 icon = "🔴" if a['level'] == 'danger' else "🟡"

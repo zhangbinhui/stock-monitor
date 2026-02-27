@@ -2269,6 +2269,29 @@ def enrich_data_with_market_info(result: pd.DataFrame) -> pd.DataFrame:
 
         company_summary.append(company_info)
 
+        # === 记录信号快照（用于反馈追踪）===
+        try:
+            from signal_tracker import record_signal
+            _triple_pass = valuation_pass and (_premium_rate is not None and _premium_rate <= 0.10)
+            record_signal(stock_code, stock_name, {
+                'recommendation': recommendation,
+                'stock_type': stock_type,
+                'valuation_pass': valuation_pass,
+                'valuation_desc': valuation_desc,
+                'price_at_signal': price_data.get('current_price'),
+                'premium_rate': round(_premium_rate, 4) if _premium_rate is not None else None,
+                'pe': fundamental_data.get('pe_ratio'),
+                'pb': fundamental_data.get('pb_ratio'),
+                'profit_trend': fundamental_data.get('profit_trend'),
+                'insider_count': int(company_data["增持高管人数"].iloc[0]),
+                'insider_amount': float(total_amount),
+                'triple_filter_pass': _triple_pass,
+                'position_tier': pos_target["position_tier"],
+                'freshness': freshness,
+            })
+        except Exception as e:
+            log.debug(f"  信号记录失败: {e}")
+
     summary_df = pd.DataFrame(company_summary)
 
     # 排序：通过三重过滤优先 → 信号新鲜度降序 → 增持高管人数降序 → 增持总金额降序
