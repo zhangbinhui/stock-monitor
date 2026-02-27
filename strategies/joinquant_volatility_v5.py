@@ -7,12 +7,11 @@
   第二步（后续）：加仓位管理 — 资金限制、最大持仓、手续费
   第三步（后续）：压力测试 — 牛熊分段、参数敏感性
 
-【策略逻辑】
-  1. 选股：从全A股里找「跌惨了的大票」（市值≥50亿，股价相对1年高点大幅回撤）
-  2. 盯盘：用分钟K线（5分/15分/30分）盘中监控
-  3. 买入：某根K线涨幅突破历史极值 → 以当根K线收盘价买入
-  4. 卖出：次日移动止损（跟踪盘中最高价，回撤N%卖出）+ 保底止损 + 兜底收盘卖
-  5. 统计：胜率、盈亏比、平均收益率、最大连亏
+【策略逻辑 v5.1】
+  1. 选股：行业市值/营收前10% + 从1年高点回撤超2/3
+  2. 买入信号：分钟K线涨幅突破历史极值 + 价格在1年高低点1/3分位以上
+  3. 卖出：多日持有 + 移动止盈止损 + 保本机制 + 最长持有天数
+  4. 回测：日K线级别止损模拟（省聚宽额度）
 
 【使用方法】
   聚宽(joinquant.com) → 研究环境 → 新建Notebook → 按Cell分段粘贴运行
@@ -30,83 +29,87 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ======== 股票池参数 ========
-MIN_MARKET_CAP = 50e8           # 最低市值50亿
-MAX_PRICE_RATIO_DEFAULT = 1/3   # 默认：当前价 < 1年最高价 × 1/3（跌67%）
-MARKET_CAP_TIERS = [
-    (100e8, 1/2),   # 100亿以上：跌50%入池
-    (50e8,  1/3),   # 50亿以上：跌67%入池
-]
+INDUSTRY_TOP_PCT = 0.10          # 行业内市值或营收前10%
+DROP_RATIO = 1/3                 # 当前价 < 1年最高价 × 1/3（跌超2/3）
+PRICE_POSITION_MIN = 1/3         # 价格必须在1年(最高-最低)的1/3分位以上
 
 # ======== 回测参数 ========
 END_DATE = '2026-02-25'
-BACKTEST_YEARS = 3              # 回测3年
-COOLDOWN_DAYS = 2               # 信号冷却天数
+BACKTEST_YEARS = 3               # 回测3年
+COOLDOWN_DAYS = 2                # 同一只股票信号冷却天数
 
-# ======== 手续费（固定金额，用于计算净收益率）========
-COMMISSION_PER_SIDE = 5         # 买卖各5元
-ASSUMED_TRADE_AMOUNT = 10000    # 假设每笔交易金额1万元（仅用于计算手续费率）
+# ======== 手续费估算 ========
+COMMISSION_PER_SIDE = 5          # 买卖各5元
+ASSUMED_TRADE_AMOUNT = 10000     # 假设每笔1万
+FEE_RATE_PCT = COMMISSION_PER_SIDE * 2 / ASSUMED_TRADE_AMOUNT * 100  # ≈0.1%
 
 # ======== 网格搜索参数空间 ========
+# K线周期（用于信号触发判断）
 FREQ_LIST = ['5m', '15m', '30m']
 
-# 触发类型
-MULT_LIST = [1.5, 2.0, 2.5, 3.0]
-
+# 触发类型：只保留「突破历史最大值」（中位数×N已证明无edge）
 # 回看周期
 LOOKBACK_PERIODS = ['3m', '1y']
 
-# 卖出参数：移动止损回撤比例
-TRAILING_STOP_LIST = [0.03, 0.05]
-FLOOR_STOP = 0.03               # 保底止损：跌破买入价3%无条件走
+# ======== 卖出参数（多日持有 + 移动止盈止损）========
+INITIAL_STOP_LIST = [0.05, 0.07]     # 初始止损：买入价下跌5%/7%
+TRAILING_PROFIT_LIST = [0.08, 0.10]  # 移动止盈：从最高点回撤8%/10%
+BREAKEVEN_TRIGGER = 0.05             # 浮盈超5%后止损上移到成本价
+MAX_HOLD_DAYS_LIST = [10, 20]        # 最长持有天数
 
-# ======== 显示配置 ========
-n_trigger = 1 + len(MULT_LIST)
-n_trailing = len(TRAILING_STOP_LIST)
-n_total = len(FREQ_LIST) * n_trigger * len(LOOKBACK_PERIODS) * n_trailing
-
-# 手续费率（双边）
-fee_rate = COMMISSION_PER_SIDE * 2 / ASSUMED_TRADE_AMOUNT * 100
+# ======== 计算参数组合数 ========
+n_total = (len(FREQ_LIST) * len(LOOKBACK_PERIODS) *
+           len(INITIAL_STOP_LIST) * len(TRAILING_PROFIT_LIST) *
+           len(MAX_HOLD_DAYS_LIST))
 
 print("=" * 60)
-print("✅ Cell 1 配置完成（纯信号验证模式）")
+print("✅ Cell 1 配置完成（纯信号验证 v5.1）")
 print("=" * 60)
-print(f"  📌 股票池: 市值≥{MIN_MARKET_CAP/1e8:.0f}亿，从1年高点大幅回撤")
+print(f"  📌 选股: 行业市值/营收前{INDUSTRY_TOP_PCT*100:.0f}% + 从高点跌超{(1-DROP_RATIO)*100:.0f}%")
+print(f"  📌 买入过滤: 价格在1年高低点{PRICE_POSITION_MIN*100:.0f}%分位以上（脱离底部）")
 print(f"  📌 K线周期: {FREQ_LIST}")
-print(f"  📌 触发方式: A类(突破最大值) + B类(中位数×{MULT_LIST})")
+print(f"  📌 触发: 突破历史最大涨幅（已砍掉中位数×N）")
 print(f"  📌 回看周期: {LOOKBACK_PERIODS}")
-print(f"  📌 卖出策略: 移动止损(回撤{[f'{x*100:.0f}%' for x in TRAILING_STOP_LIST]}) + 保底止损({FLOOR_STOP*100:.0f}%) + 兜底收盘卖")
+print(f"  📌 卖出: 初始止损{[f'{x*100:.0f}%' for x in INITIAL_STOP_LIST]} | "
+      f"移动止盈回撤{[f'{x*100:.0f}%' for x in TRAILING_PROFIT_LIST]} | "
+      f"保本触发{BREAKEVEN_TRIGGER*100:.0f}% | "
+      f"最长持有{MAX_HOLD_DAYS_LIST}天")
 print(f"  📌 回测区间: {BACKTEST_YEARS}年（截止{END_DATE}）")
-print(f"  📌 手续费率: 约{fee_rate:.2f}%（按每笔{ASSUMED_TRADE_AMOUNT/10000:.0f}万估算）")
+print(f"  📌 止损模拟: 日K线级别（省聚宽额度）")
 print(f"  📌 参数组合: {n_total} 种")
 print(f"  ⚠️ 纯信号模式：不模拟资金，每个信号假设都能成交")
 
 
 # ============================================================
-# Cell 2：构建滚动股票池
+# Cell 2：构建滚动股票池（行业龙头 + 深度回撤）
 # ============================================================
 
 def build_rolling_pool(end_date, backtest_years=BACKTEST_YEARS,
-                       min_cap=MIN_MARKET_CAP, tiers=MARKET_CAP_TIERS):
+                       top_pct=INDUSTRY_TOP_PCT, drop_ratio=DROP_RATIO,
+                       price_pos_min=PRICE_POSITION_MIN):
     """
-    构建滚动股票池：每个交易日判断哪些股票「跌惨了」
+    构建滚动股票池：
+      1. 按申万一级行业分组
+      2. 每个行业取市值或营收前10%的股票
+      3. 当前价 < 1年最高价 × 1/3（跌超2/3才入池）
     
     返回:
-        pool_calendar: {股票代码: set(日期)} 每只股票哪些天在池子里
-        stock_info:    {股票代码: {'name': 名称, 'market_cap': 市值(亿)}}
+        pool_calendar: {股票代码: set(日期)}
+        stock_info:    {股票代码: {'name', 'market_cap', 'industry'}}
     """
     print(f"\n{'='*60}")
-    print(f"📊 第一步：构建滚动股票池")
+    print(f"📊 第一步：构建滚动股票池（行业龙头+深度回撤）")
     print(f"{'='*60}")
 
     bt_start = pd.to_datetime(end_date) - timedelta(days=365 * backtest_years)
-    data_start = bt_start - timedelta(days=365)
+    data_start = bt_start - timedelta(days=365)  # 多拉1年算year_high
     bt_start_str = bt_start.strftime('%Y-%m-%d')
     data_start_str = data_start.strftime('%Y-%m-%d')
 
     all_trade_days = get_trade_days(start_date=bt_start_str, end_date=end_date)
     print(f"  回测区间: {bt_start_str} ~ {end_date} ({len(all_trade_days)}个交易日)")
 
-    # 过滤ST、上市不满2年
+    # ---- 获取所有非ST、上市>2年的股票 ----
     all_stocks = get_all_securities(types=['stock'], date=end_date)
     two_years_ago = (pd.to_datetime(end_date) - timedelta(days=365*2)).date()
     valid = all_stocks[all_stocks['start_date'] <= two_years_ago]
@@ -115,20 +118,63 @@ def build_rolling_pool(end_date, backtest_years=BACKTEST_YEARS,
                    and not get_security_info(c).display_name.startswith('*ST')]
     print(f"  非ST且上市>2年: {len(valid_codes)} 只")
 
-    # 市值初筛
+    # ---- 按申万一级行业分组，每个行业取市值前10% ----
     trade_days_list = get_trade_days(end_date=end_date, count=5)
     last_trade = str(trade_days_list[-1])
+    
+    # 获取市值
     q = query(valuation.code, valuation.market_cap).filter(
-        valuation.code.in_(valid_codes),
-        valuation.market_cap >= min_cap / 1e8 * 0.5
+        valuation.code.in_(valid_codes)
     )
     cap_df = get_fundamentals(q, date=last_trade)
-    candidate_codes = list(cap_df['code'])
     cap_dict = dict(zip(cap_df['code'], cap_df['market_cap']))
-    print(f"  市值初筛(≥{min_cap/1e8*0.5:.0f}亿): {len(candidate_codes)} 只")
+    
+    # 获取行业分类（申万一级）
+    industry_dict = {}
+    for code in valid_codes:
+        try:
+            ind = get_industry(code, date=last_trade)
+            if code in ind and 'sw_l1' in ind[code]:
+                industry_dict[code] = ind[code]['sw_l1']['industry_name']
+        except:
+            continue
+    
+    # 每个行业取市值前10%
+    industry_groups = {}
+    for code, ind_name in industry_dict.items():
+        if ind_name not in industry_groups:
+            industry_groups[ind_name] = []
+        cap = cap_dict.get(code, 0)
+        if cap > 0:
+            industry_groups[ind_name].append((code, cap))
+    
+    candidate_codes = []
+    industry_stats = {}
+    for ind_name, stocks in industry_groups.items():
+        stocks_sorted = sorted(stocks, key=lambda x: -x[1])
+        top_n = max(1, int(len(stocks_sorted) * top_pct))
+        top_stocks = stocks_sorted[:top_n]
+        candidate_codes.extend([s[0] for s in top_stocks])
+        industry_stats[ind_name] = {
+            'total': len(stocks_sorted),
+            'selected': top_n,
+            'min_cap': top_stocks[-1][1] if top_stocks else 0,
+        }
+    
+    print(f"  行业数: {len(industry_groups)} 个")
+    print(f"  行业前{top_pct*100:.0f}%筛选: {len(candidate_codes)} 只")
+    
+    # 显示各行业入选情况
+    sorted_industries = sorted(industry_stats.items(), key=lambda x: -x[1]['selected'])
+    print(f"\n  📋 各行业入选数量:")
+    print(f"  {'行业':<12s}  {'总数':>4s}  {'入选':>4s}  {'最低市值(亿)':>10s}")
+    for ind_name, stats in sorted_industries[:15]:
+        print(f"  {ind_name:<12s}  {stats['total']:>4d}  {stats['selected']:>4d}  {stats['min_cap']:>10.0f}")
+    if len(sorted_industries) > 15:
+        print(f"  ... 还有 {len(sorted_industries)-15} 个行业")
 
-    # 逐只计算入池日期
-    print(f"  拉取日K线并计算...")
+    # ---- 逐只计算入池日期（从高点跌超2/3 + 价格在1/3分位以上）----
+    print(f"\n  拉取日K线并计算入池日期...")
     pool_calendar = {}
     stock_info = {}
     total_pool_days = 0
@@ -136,11 +182,12 @@ def build_rolling_pool(end_date, backtest_years=BACKTEST_YEARS,
     for i in range(0, len(candidate_codes), 50):
         batch = candidate_codes[i:i+50]
         prices = get_price(batch, start_date=data_start_str, end_date=end_date,
-                           frequency='daily', fields=['high', 'close'], panel=True)
+                           frequency='daily', fields=['high', 'low', 'close'], panel=True)
         for code in batch:
             try:
                 if isinstance(prices['high'], pd.DataFrame):
                     highs = prices['high'][code].dropna()
+                    lows = prices['low'][code].dropna()
                     closes = prices['close'][code].dropna()
                 else:
                     continue
@@ -149,28 +196,37 @@ def build_rolling_pool(end_date, backtest_years=BACKTEST_YEARS,
 
                 name = get_security_info(code).display_name
                 cap = cap_dict.get(code, 0)
-                ratio = MAX_PRICE_RATIO_DEFAULT
-                for tier_cap, tier_ratio in tiers:
-                    if cap * 1e8 >= tier_cap:
-                        ratio = tier_ratio
-                        break
+                ind = industry_dict.get(code, '未知')
 
                 valid_dates = set()
                 close_arr = closes.values
                 high_arr = highs.values
+                low_arr = lows.values
                 dates_arr = closes.index
+
                 for j in range(250, len(close_arr)):
                     year_high = high_arr[j-250:j].max()
+                    year_low = low_arr[j-250:j].min()
                     current = close_arr[j]
                     d = str(dates_arr[j].date())
                     if d < bt_start_str:
                         continue
-                    if current < year_high * ratio:
+                    
+                    # 条件1: 从高点跌超2/3
+                    if current >= year_high * drop_ratio:
+                        continue
+                    
+                    # 条件2: 价格在高低点的1/3分位以上（脱离底部）
+                    price_range = year_high - year_low
+                    if price_range <= 0:
+                        continue
+                    price_position = (current - year_low) / price_range
+                    if price_position >= price_pos_min:
                         valid_dates.add(d)
 
                 if valid_dates:
                     pool_calendar[code] = valid_dates
-                    stock_info[code] = {'name': name, 'market_cap': cap}
+                    stock_info[code] = {'name': name, 'market_cap': cap, 'industry': ind}
                     total_pool_days += len(valid_dates)
             except:
                 continue
@@ -180,15 +236,25 @@ def build_rolling_pool(end_date, backtest_years=BACKTEST_YEARS,
 
     print(f"\n  ✅ 股票池构建完成!")
     print(f"  入池股票: {len(pool_calendar)} 只")
-    print(f"  平均入池: {total_pool_days/max(len(pool_calendar),1):.0f} 天/只")
-
     if pool_calendar:
+        print(f"  平均入池: {total_pool_days/len(pool_calendar):.0f} 天/只")
+    
+        # 按行业统计入池数
+        ind_pool_count = {}
+        for code in pool_calendar:
+            ind = stock_info[code].get('industry', '未知')
+            ind_pool_count[ind] = ind_pool_count.get(ind, 0) + 1
+        
+        print(f"\n  📋 入池股票行业分布:")
+        for ind, cnt in sorted(ind_pool_count.items(), key=lambda x: -x[1])[:10]:
+            print(f"    {ind}: {cnt}只")
+
         sorted_stocks = sorted(pool_calendar.items(), key=lambda x: -len(x[1]))[:20]
         print(f"\n  📋 入池天数TOP20:")
-        print(f"  {'股票':>10s}  {'代码':>14s}  {'入池天数':>6s}  {'市值(亿)':>8s}")
+        print(f"  {'股票':>10s}  {'代码':>14s}  {'行业':>8s}  {'入池天数':>6s}  {'市值(亿)':>8s}")
         for code, dates in sorted_stocks:
             info = stock_info[code]
-            print(f"  {info['name']:>10s}  {code:>14s}  {len(dates):>6d}天  {info['market_cap']:>8.0f}")
+            print(f"  {info['name']:>10s}  {code:>14s}  {info['industry']:>8s}  {len(dates):>6d}天  {info['market_cap']:>8.0f}")
 
     return pool_calendar, stock_info
 
@@ -197,7 +263,7 @@ print(f"\n✅ Cell 2 完成")
 
 
 # ============================================================
-# Cell 3：核心引擎（纯信号验证）
+# Cell 3：核心引擎（纯信号验证 + 日K线多日止损模拟）
 # ============================================================
 
 def get_lookback_bars(freq, period):
@@ -207,81 +273,116 @@ def get_lookback_bars(freq, period):
     return bars_per_day[freq] * days[period]
 
 
-def simulate_trailing_stop_sell(stock_code, buy_date, buy_price, freq, trailing_pct, floor_stop_pct):
+def simulate_daily_exit(stock_code, buy_date, buy_price,
+                        initial_stop_pct, trailing_profit_pct,
+                        breakeven_trigger_pct, max_hold_days,
+                        end_date=END_DATE):
     """
-    模拟次日的移动止损卖出
-    
+    用日K线模拟多日持有的止盈止损
+
+    逻辑（每天按顺序检查）：
+      1. 当日最低价 <= 止损价 → 以止损价卖出
+      2. 当日最高价创新高 → 更新移动止盈线
+      3. 如果浮盈曾超过breakeven_trigger → 止损上移到成本价
+      4. 当日最低价 <= 移动止盈线 → 以止盈线价格卖出
+      5. 持有天数到上限 → 以收盘价卖出
+
+    注意：日K线无法区分盘中高低点先后顺序
+      保守处理：同一天最高最低都触发时，优先触发止损（假设最坏情况）
+
     返回:
-        (卖出价, 卖出方式, 盘中最高价, 持有K线数) 或 None
+        (卖出价, 卖出方式, 持有天数, 盘中最高价, 最大浮盈%) 或 None
     """
-    next_days = get_trade_days(start_date=buy_date, count=3)
-    if len(next_days) < 2:
+    # 获取买入日之后的日K线
+    buy_dt = pd.to_datetime(buy_date)
+    fetch_end = min(
+        (buy_dt + timedelta(days=max_hold_days * 2 + 10)).strftime('%Y-%m-%d'),
+        end_date
+    )
+    
+    daily = get_price(stock_code, start_date=buy_date, end_date=fetch_end,
+                      frequency='daily', fields=['open', 'high', 'low', 'close'])
+    if daily is None or len(daily) < 2:
         return None
     
-    buy_date_pd = pd.to_datetime(buy_date).date()
-    next_day = None
-    for d in next_days:
-        if d > buy_date_pd:
-            next_day = d
+    # 跳过买入当天，从次日开始
+    buy_date_dt = pd.to_datetime(buy_date).date()
+    daily = daily[daily.index.date > buy_date_dt]
+    if len(daily) == 0:
+        return None
+    
+    # 初始化
+    stop_price = buy_price * (1 - initial_stop_pct)  # 初始止损价
+    highest_since_buy = buy_price                     # 持有期间最高价
+    trailing_sell_price = 0                           # 移动止盈触发价（未激活时为0）
+    breakeven_activated = False                       # 保本机制是否激活
+    
+    trade_days = get_trade_days(start_date=buy_date, end_date=fetch_end)
+    trade_days_after_buy = [d for d in trade_days if d > buy_date_dt]
+    
+    for day_idx, date in enumerate(trade_days_after_buy):
+        if day_idx >= max_hold_days:
             break
-    if next_day is None:
-        return None
-    
-    next_day_str = str(next_day)
-    next_day_end = (pd.to_datetime(next_day_str) + timedelta(days=1)).strftime('%Y-%m-%d')
-    min_bars = get_price(stock_code, start_date=next_day_str, end_date=next_day_end,
-                         frequency=freq, fields=['open', 'close', 'high', 'low'])
-    
-    if min_bars is None or len(min_bars) == 0:
-        return None
-    
-    min_bars = min_bars[min_bars.index.date == next_day]
-    if len(min_bars) == 0:
-        return None
-    
-    floor_price = buy_price * (1 - floor_stop_pct)
-    intraday_high = 0
-    
-    for idx in range(len(min_bars)):
-        bar = min_bars.iloc[idx]
-        bar_high = bar['high']
-        bar_low = bar['low']
-        bar_close = bar['close']
         
-        if bar_high > intraday_high:
-            intraday_high = bar_high
+        # 找当天的K线
+        day_data = daily[daily.index.date == date]
+        if len(day_data) == 0:
+            continue
         
-        # 保底止损
-        if bar_low <= floor_price:
-            return (round(floor_price, 3), '保底止损', round(intraday_high, 3), idx + 1)
+        bar = day_data.iloc[0]
+        day_high = bar['high']
+        day_low = bar['low']
+        day_close = bar['close']
+        hold_days = day_idx + 1
         
-        # 移动止损
-        if intraday_high > 0:
-            trailing_price = intraday_high * (1 - trailing_pct)
-            if bar_low <= trailing_price:
-                sell_p = min(trailing_price, bar_close)
-                return (round(sell_p, 3), f'移动止损{trailing_pct*100:.0f}%', round(intraday_high, 3), idx + 1)
+        # ---- 1. 检查止损 ----
+        if day_low <= stop_price:
+            max_profit_pct = (highest_since_buy - buy_price) / buy_price * 100
+            sell_type = '保本止损' if breakeven_activated and stop_price >= buy_price else '初始止损'
+            return (round(stop_price, 3), sell_type, hold_days,
+                    round(highest_since_buy, 3), round(max_profit_pct, 2))
+        
+        # ---- 2. 更新最高价 ----
+        if day_high > highest_since_buy:
+            highest_since_buy = day_high
+        
+        # ---- 3. 检查保本触发 ----
+        current_profit_pct = (highest_since_buy - buy_price) / buy_price
+        if not breakeven_activated and current_profit_pct >= breakeven_trigger_pct:
+            breakeven_activated = True
+            stop_price = buy_price  # 止损上移到成本价
+        
+        # ---- 4. 计算并检查移动止盈 ----
+        trailing_sell_price = highest_since_buy * (1 - trailing_profit_pct)
+        
+        # 移动止盈线高于止损线时才用移动止盈
+        if trailing_sell_price > stop_price:
+            if day_low <= trailing_sell_price:
+                max_profit_pct = (highest_since_buy - buy_price) / buy_price * 100
+                return (round(trailing_sell_price, 3), f'移动止盈(回撤{trailing_profit_pct*100:.0f}%)',
+                        hold_days, round(highest_since_buy, 3), round(max_profit_pct, 2))
     
-    # 兜底收盘卖
-    last_close = min_bars.iloc[-1]['close']
-    return (round(last_close, 3), '次日收盘卖', round(intraday_high, 3), len(min_bars))
+    # ---- 5. 到期卖出 ----
+    if len(daily) > 0:
+        last_bar = daily.iloc[min(max_hold_days - 1, len(daily) - 1)]
+        sell_price = last_bar['close']
+        max_profit_pct = (highest_since_buy - buy_price) / buy_price * 100
+        return (round(sell_price, 3), f'到期卖出({max_hold_days}天)',
+                min(max_hold_days, len(daily)), round(highest_since_buy, 3),
+                round(max_profit_pct, 2))
+    
+    return None
 
 
 def backtest_signals(pool_calendar, stock_info, max_stocks,
-                     freq, period, signal_type, multiplier,
-                     trailing_pct,
+                     freq, period,
+                     initial_stop_pct, trailing_profit_pct,
+                     breakeven_trigger_pct, max_hold_days,
                      end_date=END_DATE, cooldown=COOLDOWN_DAYS):
     """
-    纯信号回测：收集所有信号，计算每笔收益率
-    不涉及任何资金管理逻辑
-    
-    返回:
-        {
-            '参数': ...,
-            '信号列表': [...],    # 每笔信号的完整信息
-            '个股统计': [...],
-            '汇总': {...},        # 胜率、盈亏比等
-        }
+    纯信号回测：
+      1. 分钟K线找买入信号（突破历史极值 + 价格分位过滤）
+      2. 日K线模拟多日持有的止盈止损
     """
     lookback_days_map = {'3m': 63, '1y': 250}
     sorted_stocks = sorted(pool_calendar.items(), key=lambda x: -len(x[1]))[:max_stocks]
@@ -291,18 +392,14 @@ def backtest_signals(pool_calendar, stock_info, max_stocks,
     
     for si, (code, valid_dates) in enumerate(sorted_stocks):
         name = stock_info[code]['name']
+        industry = stock_info[code].get('industry', '')
         
         try:
             earliest = min(valid_dates)
-            data_start = (pd.to_datetime(earliest) - timedelta(days=lookback_days_map[period] * 2)).strftime('%Y-%m-%d')
+            data_start = (pd.to_datetime(earliest) - timedelta(
+                days=lookback_days_map[period] * 2)).strftime('%Y-%m-%d')
             
-            # 日K线
-            daily = get_price(code, start_date=data_start, end_date=end_date,
-                              frequency='daily', fields=['open', 'high', 'low', 'close', 'pre_close'])
-            if daily is None or len(daily) < lookback_days_map[period] + 30:
-                continue
-            
-            # 分钟K线
+            # 分钟K线（用于信号触发）
             min_df = get_price(code, start_date=data_start, end_date=end_date,
                                frequency=freq, fields=['open', 'close', 'high', 'low', 'volume'])
             if min_df is None or len(min_df) < get_lookback_bars(freq, period):
@@ -316,11 +413,17 @@ def backtest_signals(pool_calendar, stock_info, max_stocks,
             
             stock_signals = []
             last_signal_date_idx = -999
+            last_sell_date = None  # 上一笔卖出日期，避免持仓重叠
             
             for i, date in enumerate(trade_dates):
                 date_str = str(date)
                 
+                # 冷却期
                 if i - last_signal_date_idx <= cooldown:
+                    continue
+                
+                # 如果上一笔还没卖出，跳过
+                if last_sell_date and date_str <= last_sell_date:
                     continue
                 
                 day_bars = min_df[min_df['date'] == date]
@@ -333,18 +436,8 @@ def backtest_signals(pool_calendar, stock_info, max_stocks,
                 
                 hist_returns = hist['bar_return'].iloc[-lookback_bars:]
                 
-                # 计算阈值
-                if signal_type == 'max_break':
-                    threshold = hist_returns.max()
-                elif signal_type == 'mult_break':
-                    pos_returns = hist_returns[hist_returns > 0]
-                    base = pos_returns.median() if len(pos_returns) > 0 else 0
-                    if pd.isna(base) or base <= 0:
-                        continue
-                    threshold = base * multiplier
-                else:
-                    continue
-                
+                # 阈值：突破历史最大涨幅
+                threshold = hist_returns.max()
                 if pd.isna(threshold) or threshold <= 0:
                     continue
                 
@@ -363,41 +456,45 @@ def backtest_signals(pool_calendar, stock_info, max_stocks,
                 if not triggered:
                     continue
                 
-                # 模拟次日移动止损卖出
-                sell_result = simulate_trailing_stop_sell(
-                    code, date_str, trigger_price, freq, trailing_pct, FLOOR_STOP)
+                # ★ 日K线模拟多日止盈止损
+                sell_result = simulate_daily_exit(
+                    code, date_str, trigger_price,
+                    initial_stop_pct, trailing_profit_pct,
+                    breakeven_trigger_pct, max_hold_days,
+                    end_date=end_date
+                )
                 
                 if sell_result is None:
                     continue
                 
-                sell_price, sell_type, intraday_high, hold_bars = sell_result
+                sell_price, sell_type, hold_days, highest, max_profit_pct = sell_result
                 
-                # 毛收益率（不含手续费）
+                # 收益率
                 raw_ret = (sell_price - trigger_price) / trigger_price * 100
-                # 净收益率（扣手续费）
-                fee_pct = COMMISSION_PER_SIDE * 2 / ASSUMED_TRADE_AMOUNT * 100
-                net_ret = raw_ret - fee_pct
-                
-                # 次日涨幅（盘中最高相对买入价）
-                max_profit_pct = (intraday_high - trigger_price) / trigger_price * 100 if intraday_high > trigger_price else 0
+                net_ret = raw_ret - FEE_RATE_PCT
                 
                 last_signal_date_idx = i
+                # 计算卖出日期，避免持仓重叠
+                sell_trade_days = get_trade_days(start_date=date_str, count=hold_days + 1)
+                if len(sell_trade_days) > hold_days:
+                    last_sell_date = str(sell_trade_days[hold_days])
                 
                 signal = {
                     '日期': date_str,
                     '股票': name,
                     '代码': code,
+                    '行业': industry,
                     '触发时间': str(trigger_bar),
                     '买入价': trigger_price,
                     'K线涨幅%': round(trigger_return * 100, 2),
                     '阈值%': round(threshold * 100, 2),
                     '卖出价': sell_price,
                     '卖出方式': sell_type,
-                    '盘中最高': intraday_high,
+                    '持有天数': hold_days,
+                    '盘中最高': highest,
                     '最大浮盈%': round(max_profit_pct, 2),
                     '毛收益率%': round(raw_ret, 2),
                     '净收益率%': round(net_ret, 2),
-                    '持有K线数': hold_bars,
                 }
                 stock_signals.append(signal)
                 all_signals.append(signal)
@@ -410,10 +507,12 @@ def backtest_signals(pool_calendar, stock_info, max_stocks,
                 avg_win = np.mean([r for r in rets if r > 0]) if wins > 0 else 0
                 avg_loss = np.mean([r for r in rets if r <= 0]) if total - wins > 0 else 0
                 pl_ratio = abs(avg_win / avg_loss) if avg_loss != 0 else float('inf')
+                avg_hold = np.mean([s['持有天数'] for s in stock_signals])
                 
                 stock_summaries.append({
                     '股票': name,
                     '代码': code,
+                    '行业': industry,
                     '入池天数': len(valid_dates),
                     '信号数': total,
                     '胜率%': round(wins/total*100, 1),
@@ -421,7 +520,7 @@ def backtest_signals(pool_calendar, stock_info, max_stocks,
                     '平均盈利%': round(avg_win, 2),
                     '平均亏损%': round(avg_loss, 2),
                     '盈亏比': round(pl_ratio, 2) if pl_ratio != float('inf') else 999,
-                    '最大浮盈%': round(max(s['最大浮盈%'] for s in stock_signals), 2),
+                    '平均持有天': round(avg_hold, 1),
                 })
         except:
             continue
@@ -433,6 +532,7 @@ def backtest_signals(pool_calendar, stock_info, max_stocks,
     rets = [s['净收益率%'] for s in all_signals]
     wins = [r for r in rets if r > 0]
     losses = [r for r in rets if r <= 0]
+    hold_days_list = [s['持有天数'] for s in all_signals]
     
     avg_win = np.mean(wins) if wins else 0
     avg_loss = np.mean(losses) if losses else 0
@@ -448,7 +548,7 @@ def backtest_signals(pool_calendar, stock_info, max_stocks,
         else:
             cur_consec = 0
     
-    # 期望值 = 胜率 × 平均盈利 + (1-胜率) × 平均亏损
+    # 期望值
     win_rate = len(wins) / len(rets) if rets else 0
     expectancy = win_rate * avg_win + (1 - win_rate) * avg_loss
     
@@ -470,6 +570,7 @@ def backtest_signals(pool_calendar, stock_info, max_stocks,
         '最大单笔亏损%': round(min(rets), 2),
         '期望值%': round(expectancy, 3),
         '最大连亏次数': max_consec_loss,
+        '平均持有天数': round(np.mean(hold_days_list), 1),
         '有信号股票数': len(stock_summaries),
         '卖出方式分布': sell_types,
     }
@@ -488,33 +589,31 @@ print("✅ Cell 3 引擎定义完成")
 # Cell 4：运行网格搜索
 # ============================================================
 
-MAX_STOCKS = 15  # ← 先15只验证，确认后改大
+MAX_STOCKS = 20  # 取入池天数最多的前20只
 
 print(f"\n{'='*60}")
-print(f"📊 第二步：网格搜索（{MAX_STOCKS}只股票）")
+print(f"📊 第二步：网格搜索（前{MAX_STOCKS}只股票）")
 print(f"{'='*60}")
 
 # 构建参数网格
 param_grid = []
 for freq in FREQ_LIST:
     for period in LOOKBACK_PERIODS:
-        for trailing in TRAILING_STOP_LIST:
-            trailing_label = f"回撤{trailing*100:.0f}%止损"
-            # A类
-            param_grid.append({
-                'freq': freq, 'signal_type': 'max_break',
-                'period': period, 'multiplier': None,
-                'trailing_pct': trailing,
-                'label': f"{freq}|突破最大值|回看{period}|{trailing_label}"
-            })
-            # B类
-            for mult in MULT_LIST:
-                param_grid.append({
-                    'freq': freq, 'signal_type': 'mult_break',
-                    'period': period, 'multiplier': mult,
-                    'trailing_pct': trailing,
-                    'label': f"{freq}|中位数×{mult}|回看{period}|{trailing_label}"
-                })
+        for init_stop in INITIAL_STOP_LIST:
+            for trail_profit in TRAILING_PROFIT_LIST:
+                for max_days in MAX_HOLD_DAYS_LIST:
+                    label = (f"{freq}|回看{period}|"
+                             f"止损{init_stop*100:.0f}%|"
+                             f"止盈回撤{trail_profit*100:.0f}%|"
+                             f"持有{max_days}天")
+                    param_grid.append({
+                        'freq': freq,
+                        'period': period,
+                        'initial_stop': init_stop,
+                        'trailing_profit': trail_profit,
+                        'max_hold_days': max_days,
+                        'label': label,
+                    })
 
 print(f"  参数组合: {len(param_grid)} 种")
 print(f"  开始搜索...\n")
@@ -529,9 +628,10 @@ for pi, params in enumerate(param_grid):
         pool_calendar, stock_info, MAX_STOCKS,
         freq=params['freq'],
         period=params['period'],
-        signal_type=params['signal_type'],
-        multiplier=params['multiplier'],
-        trailing_pct=params['trailing_pct'],
+        initial_stop_pct=params['initial_stop'],
+        trailing_profit_pct=params['trailing_profit'],
+        breakeven_trigger_pct=BREAKEVEN_TRIGGER,
+        max_hold_days=params['max_hold_days'],
     )
     
     if result:
@@ -539,9 +639,10 @@ for pi, params in enumerate(param_grid):
         grid_results.append({
             '策略': label,
             'K线周期': params['freq'],
-            '触发类型': '突破最大值' if params['signal_type'] == 'max_break' else f"中位数×{params['multiplier']}",
             '回看周期': params['period'],
-            '止损回撤': f"{params['trailing_pct']*100:.0f}%",
+            '初始止损': f"{params['initial_stop']*100:.0f}%",
+            '止盈回撤': f"{params['trailing_profit']*100:.0f}%",
+            '最长持有': f"{params['max_hold_days']}天",
             '信号数': s['总信号数'],
             '胜率%': s['胜率%'],
             '盈亏比': s['盈亏比'],
@@ -549,15 +650,17 @@ for pi, params in enumerate(param_grid):
             '收益中位数%': s['收益中位数%'],
             '期望值%': s['期望值%'],
             '最大连亏': s['最大连亏次数'],
+            '平均持有天': s['平均持有天数'],
             '平均盈利%': s['平均盈利%'],
             '平均亏损%': s['平均亏损%'],
             '最大单笔盈%': s['最大单笔盈利%'],
             '最大单笔亏%': s['最大单笔亏损%'],
             '有信号股票数': s['有信号股票数'],
+            '卖出分布': s['卖出方式分布'],
             '_result': result,
         })
         print(f"      → 信号{s['总信号数']}个 | 胜率{s['胜率%']}% | 盈亏比{s['盈亏比']} | "
-              f"期望值{s['期望值%']:+.3f}% | 连亏max{s['最大连亏次数']}")
+              f"期望值{s['期望值%']:+.3f}% | 均持有{s['平均持有天数']:.1f}天 | 连亏max{s['最大连亏次数']}")
     else:
         print(f"      → 无信号")
 
@@ -574,10 +677,9 @@ else:
     gdf = pd.DataFrame(grid_results)
     
     # 综合评分：期望值40% + 盈亏比20% + 胜率20% + 信号量20%
-    # 期望值是最核心的指标：胜率 × 平均盈 + (1-胜率) × 平均亏
     gdf['信号量得分'] = gdf['信号数'].apply(lambda x: min(x / 50, 1.0) * 100)
-    gdf['期望值得分'] = (gdf['期望值%'] * 100).clip(-100, 100)  # 放大100倍作为得分
-    gdf['盈亏比得分'] = gdf['盈亏比'].clip(0, 5) * 20           # 盈亏比5封顶=100分
+    gdf['期望值得分'] = (gdf['期望值%'] * 50).clip(-100, 100)  # 放大50倍（多日持有收益率更大）
+    gdf['盈亏比得分'] = gdf['盈亏比'].clip(0, 5) * 20
     gdf['综合评分'] = (
         gdf['期望值得分'] * 0.4 +
         gdf['盈亏比得分'] * 0.2 +
@@ -588,13 +690,13 @@ else:
     gdf = gdf.sort_values('综合评分', ascending=False)
     
     print(f"\n{'='*60}")
-    print(f"🏆 策略排行榜 TOP 20（纯信号验证）")
+    print(f"🏆 策略排行榜 TOP 20（纯信号验证 v5.1）")
     print(f"{'='*60}")
     print(f"  评分 = 期望值×40% + 盈亏比×20% + 胜率×20% + 信号量×20%")
-    print(f"  ⚠️ 这是假设每笔都能成交的理论值，后续需加资金管理验证\n")
+    print(f"  ⚠️ 纯信号验证，假设每笔都能成交\n")
     
     show_cols = ['策略', '信号数', '胜率%', '盈亏比', '平均净收益%',
-                 '期望值%', '最大连亏', '综合评分']
+                 '期望值%', '平均持有天', '最大连亏', '综合评分']
     print(gdf[show_cols].head(20).to_string(index=False))
     
     # ---- 按维度拆解 ----
@@ -609,27 +711,41 @@ else:
             continue
         print(f"  {freq_cn[freq]}: 期望值{sub['期望值%'].mean():+.3f}% | "
               f"胜率{sub['胜率%'].mean():.1f}% | "
-              f"盈亏比{sub['盈亏比'].mean():.2f}")
+              f"盈亏比{sub['盈亏比'].mean():.2f} | "
+              f"均持有{sub['平均持有天'].mean():.1f}天")
     
     print(f"\n{'='*60}")
-    print("📈 按止损回撤比例汇总")
+    print("📈 按初始止损汇总")
     print(f"{'='*60}")
-    for t in TRAILING_STOP_LIST:
-        sub = gdf[gdf['止损回撤'] == f"{t*100:.0f}%"]
+    for stop in INITIAL_STOP_LIST:
+        sub = gdf[gdf['初始止损'] == f"{stop*100:.0f}%"]
         if sub.empty:
             continue
-        print(f"  回撤{t*100:.0f}%止损: 期望值{sub['期望值%'].mean():+.3f}% | "
+        print(f"  止损{stop*100:.0f}%: 期望值{sub['期望值%'].mean():+.3f}% | "
               f"胜率{sub['胜率%'].mean():.1f}% | "
               f"盈亏比{sub['盈亏比'].mean():.2f}")
     
     print(f"\n{'='*60}")
-    print("📈 按触发类型汇总")
+    print("📈 按移动止盈回撤汇总")
     print(f"{'='*60}")
-    for tt in gdf['触发类型'].unique():
-        sub = gdf[gdf['触发类型'] == tt]
-        print(f"  {tt}: 期望值{sub['期望值%'].mean():+.3f}% | "
+    for tp in TRAILING_PROFIT_LIST:
+        sub = gdf[gdf['止盈回撤'] == f"{tp*100:.0f}%"]
+        if sub.empty:
+            continue
+        print(f"  回撤{tp*100:.0f}%: 期望值{sub['期望值%'].mean():+.3f}% | "
               f"胜率{sub['胜率%'].mean():.1f}% | "
               f"盈亏比{sub['盈亏比'].mean():.2f}")
+    
+    print(f"\n{'='*60}")
+    print("📈 按最长持有天数汇总")
+    print(f"{'='*60}")
+    for md in MAX_HOLD_DAYS_LIST:
+        sub = gdf[gdf['最长持有'] == f"{md}天"]
+        if sub.empty:
+            continue
+        print(f"  {md}天: 期望值{sub['期望值%'].mean():+.3f}% | "
+              f"胜率{sub['胜率%'].mean():.1f}% | "
+              f"均持有{sub['平均持有天'].mean():.1f}天")
     
     # ---- 最佳策略详情 ----
     best = gdf.iloc[0]
@@ -642,14 +758,23 @@ else:
     print(f"  平均净收益:   {best['平均净收益%']:+.2f}%")
     print(f"  收益中位数:   {best['收益中位数%']:+.2f}%")
     print(f"  期望值:       {best['期望值%']:+.3f}%")
+    print(f"  平均持有:     {best['平均持有天']:.1f} 天")
     print(f"  最大连亏:     {best['最大连亏']:.0f} 次")
     print(f"  最大单笔盈:   {best['最大单笔盈%']:+.2f}%")
     print(f"  最大单笔亏:   {best['最大单笔亏%']:+.2f}%")
     
+    # 卖出方式分布
+    sell_dist = best.get('卖出分布', {})
+    if sell_dist:
+        total_sig = best['信号数']
+        print(f"\n  卖出方式分布:")
+        for st, cnt in sorted(sell_dist.items(), key=lambda x: -x[1]):
+            print(f"    {st}: {cnt}笔 ({cnt/total_sig*100:.1f}%)")
+    
     # 解读
     print(f"\n  💡 策略是否有edge?")
     ev = best['期望值%']
-    if ev > 0.1:
+    if ev > 0.5:
         print(f"     ✅ 期望值{ev:+.3f}%为正，策略有正期望")
         print(f"     每笔交易平均赚{ev:.3f}%，做{best['信号数']:.0f}笔理论累计{ev * best['信号数']:.1f}%")
     elif ev > 0:
@@ -664,7 +789,10 @@ else:
     elif wr <= 50 and pr > 2:
         print(f"     ⚠️ 胜率偏低但盈亏比{pr:.1f}，靠大赚弥补，心态要求高")
     elif wr > 50 and pr <= 1:
-        print(f"     ⚠️ 胜率高但盈亏比{pr:.1f}偏低，小亏大赚不多")
+        print(f"     ⚠️ 胜率高但盈亏比{pr:.1f}偏低，赚的不够多")
+    
+    avg_hold = best['平均持有天']
+    print(f"     📅 平均持有{avg_hold:.1f}天，年化交易约{250/avg_hold:.0f}次（单只）")
 
 
 # ============================================================
@@ -681,27 +809,22 @@ if grid_results and len(gdf) > 0:
         print(f"\n{'='*60}")
         print(f"🏆 最佳策略 [{best_label}] 各股票表现:")
         print(f"{'='*60}")
-        print(sdf.to_string(index=False))
+        show = ['股票', '行业', '信号数', '胜率%', '盈亏比', '平均收益%', '平均持有天']
+        print(sdf[show].to_string(index=False))
         
         profitable = len(sdf[sdf['平均收益%'] > 0])
         losing = len(sdf[sdf['平均收益%'] <= 0])
         print(f"\n  {profitable}只平均赚钱，{losing}只平均亏钱")
     
-    # 卖出方式分布
-    sell_dist = best_result['汇总']['卖出方式分布']
-    total_sig = best_result['汇总']['总信号数']
-    print(f"\n  卖出方式分布:")
-    for st, cnt in sorted(sell_dist.items(), key=lambda x: -x[1]):
-        print(f"    {st}: {cnt}笔 ({cnt/total_sig*100:.1f}%)")
-    
-    # 交易明细
+    # 信号明细
     if best_result['信号列表']:
         tlog = pd.DataFrame(best_result['信号列表'])
         print(f"\n{'='*60}")
         print(f"📋 信号明细（共{len(tlog)}笔）")
         print(f"{'='*60}")
         
-        show_cols_detail = ['日期', '股票', '买入价', '卖出价', '卖出方式', '最大浮盈%', '净收益率%']
+        show_cols_detail = ['日期', '股票', '买入价', '卖出价', '卖出方式',
+                           '持有天数', '最大浮盈%', '净收益率%']
         
         if len(tlog) <= 30:
             print(f"\n{tlog[show_cols_detail].to_string(index=False)}")
@@ -717,12 +840,25 @@ if grid_results and len(gdf) > 0:
         print(f"📊 收益率分布")
         print(f"{'='*60}")
         rets = tlog['净收益率%']
-        bins = [(-999, -5), (-5, -3), (-3, -1), (-1, 0), (0, 1), (1, 3), (3, 5), (5, 10), (10, 999)]
-        labels = ['<-5%', '-5~-3%', '-3~-1%', '-1~0%', '0~1%', '1~3%', '3~5%', '5~10%', '>10%']
+        bins = [(-999, -7), (-7, -5), (-5, -3), (-3, 0),
+                (0, 3), (3, 5), (5, 10), (10, 20), (20, 999)]
+        labels = ['<-7%', '-7~-5%', '-5~-3%', '-3~0%',
+                  '0~3%', '3~5%', '5~10%', '10~20%', '>20%']
         for (lo, hi), label in zip(bins, labels):
             cnt = len(rets[(rets > lo) & (rets <= hi)])
-            bar = '█' * int(cnt / len(rets) * 50)
-            print(f"  {label:>8s}: {cnt:>3d}笔 ({cnt/len(rets)*100:>5.1f}%) {bar}")
+            bar = '█' * int(cnt / max(len(rets), 1) * 50)
+            print(f"  {label:>8s}: {cnt:>3d}笔 ({cnt/max(len(rets),1)*100:>5.1f}%) {bar}")
+        
+        # 持有天数分布
+        print(f"\n{'='*60}")
+        print(f"📊 持有天数分布")
+        print(f"{'='*60}")
+        hdays = tlog['持有天数']
+        for d in sorted(hdays.unique()):
+            cnt = len(hdays[hdays == d])
+            avg_r = tlog[hdays == d]['净收益率%'].mean()
+            bar = '█' * int(cnt / max(len(hdays), 1) * 50)
+            print(f"  {d:>2d}天: {cnt:>3d}笔 (均收{avg_r:+.2f}%) {bar}")
         
         # 按月统计
         tlog['月份'] = pd.to_datetime(tlog['日期']).dt.to_period('M').astype(str)
@@ -730,8 +866,7 @@ if grid_results and len(gdf) > 0:
             信号数=('净收益率%', 'count'),
             胜率=('净收益率%', lambda x: f"{(x > 0).sum() / len(x) * 100:.0f}%"),
             平均收益=('净收益率%', lambda x: f"{x.mean():+.2f}%"),
-            最大盈=('净收益率%', 'max'),
-            最大亏=('净收益率%', 'min'),
+            均持有天=('持有天数', lambda x: f"{x.mean():.1f}"),
         )
         print(f"\n{'='*60}")
         print(f"📅 按月统计")
