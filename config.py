@@ -28,4 +28,4 @@ MIN_MARKET_CAP_RATIO = 0.0001  # 增持金额占市值的最低比例（0.01%）
 EXEC_SALARY_MULTIPLIER = 0.5   # 增持金额 vs 年薪比例阈值（0.5倍年薪）
 
 # 历史记录文件
-HISTORY_FILE = "history_results.json"
+HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "history_results.json")

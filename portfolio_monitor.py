@@ -42,8 +42,8 @@ log = logging.getLogger("portfolio")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 PORTFOLIO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portfolio.json")
-ALERT_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "alert_state.json")
-SIGNAL_TRACK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signal_track.json")
+ALERT_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "alert_state.json")
+SIGNAL_TRACK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "signal_track.json")
 
 # Telegram 配置（从环境变量读取）
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")

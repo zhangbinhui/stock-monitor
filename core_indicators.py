@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 
 log = logging.getLogger("core_indicators")
 
-CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "indicator_cache.json")
+CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "indicator_cache.json")
 
 # ============================================================
 # 缓存
@@ -323,7 +323,7 @@ def fetch_commodity_prices(products: List[str], cost_driver: str = None) -> Dict
         '棉花': 'CF0',
     }
     
-    COMMODITY_PRICES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "commodity_prices.json")
+    COMMODITY_PRICES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "commodity_prices.json")
     
     # 加载手动/半自动维护的价格缓存
     manual_prices = {}
@@ -782,7 +782,7 @@ if __name__ == "__main__":
     
     # 加载 portfolio.json 测试
     import json
-    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'portfolio.json'), 'r') as f:
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'portfolio.json'), 'r') as f:  # portfolio.json stays in root
         portfolio = json.load(f)
     
     engine = IndicatorEngine()
