@@ -8,8 +8,8 @@
   第三步（后续）：压力测试 — 牛熊分段、参数敏感性
 
 【策略逻辑 v5.1】
-  1. 选股：行业市值/营收前10% + 从1年高点回撤超2/3
-  2. 买入信号：分钟K线涨幅突破历史极值 + 价格在1年高低点1/3分位以上
+  1. 选股：行业市值前10% + 1年内最低点曾跌破高点1/3 + 当前价已脱离底部(1/3分位以上)
+  2. 买入信号：分钟K线涨幅突破历史极值
   3. 卖出：多日持有 + 移动止盈止损 + 保本机制 + 最长持有天数
   4. 回测：日K线级别止损模拟（省聚宽额度）
 
@@ -30,8 +30,8 @@ warnings.filterwarnings('ignore')
 
 # ======== 股票池参数 ========
 INDUSTRY_TOP_PCT = 0.10          # 行业内市值或营收前10%
-DROP_RATIO = 1/3                 # 当前价 < 1年最高价 × 1/3（跌超2/3）
-PRICE_POSITION_MIN = 1/3         # 价格必须在1年(最高-最低)的1/3分位以上
+DROP_RATIO = 1/3                 # 1年内最低点 < 最高点 × 1/3（曾跌超2/3）
+PRICE_POSITION_MIN = 1/3         # 当前价在1年(最高-最低)的1/3分位以上（已脱离底部）
 
 # ======== 回测参数 ========
 END_DATE = '2026-02-25'
@@ -65,8 +65,8 @@ n_total = (len(FREQ_LIST) * len(LOOKBACK_PERIODS) *
 print("=" * 60)
 print("✅ Cell 1 配置完成（纯信号验证 v5.1）")
 print("=" * 60)
-print(f"  📌 选股: 行业市值/营收前{INDUSTRY_TOP_PCT*100:.0f}% + 从高点跌超{(1-DROP_RATIO)*100:.0f}%")
-print(f"  📌 买入过滤: 价格在1年高低点{PRICE_POSITION_MIN*100:.0f}%分位以上（脱离底部）")
+print(f"  📌 选股: 行业市值前{INDUSTRY_TOP_PCT*100:.0f}% + 1年内曾跌破高点{DROP_RATIO*100:.0f}% + 当前价脱离底部")
+print(f"  📌 入池条件: 最低点<高点×{DROP_RATIO:.2f}（跌惨过）+ 当前价在高低点{PRICE_POSITION_MIN*100:.0f}%分位以上（爬出来了）")
 print(f"  📌 K线周期: {FREQ_LIST}")
 print(f"  📌 触发: 突破历史最大涨幅（已砍掉中位数×N）")
 print(f"  📌 回看周期: {LOOKBACK_PERIODS}")
@@ -173,7 +173,7 @@ def build_rolling_pool(end_date, backtest_years=BACKTEST_YEARS,
     if len(sorted_industries) > 15:
         print(f"  ... 还有 {len(sorted_industries)-15} 个行业")
 
-    # ---- 逐只计算入池日期（从高点跌超2/3 + 价格在1/3分位以上）----
+    # ---- 逐只计算入池日期（1年内曾跌破高点1/3 + 当前价在1/3分位以上）----
     print(f"\n  拉取日K线并计算入池日期...")
     pool_calendar = {}
     stock_info = {}
@@ -212,11 +212,11 @@ def build_rolling_pool(end_date, backtest_years=BACKTEST_YEARS,
                     if d < bt_start_str:
                         continue
                     
-                    # 条件1: 从高点跌超2/3
-                    if current >= year_high * drop_ratio:
+                    # 条件1: 过去1年内最低点曾跌破高点的1/3（说明这票跌惨过）
+                    if year_low >= year_high * drop_ratio:
                         continue
                     
-                    # 条件2: 价格在高低点的1/3分位以上（脱离底部）
+                    # 条件2: 当前价格在高低点的1/3分位以上（已从深坑爬出来）
                     price_range = year_high - year_low
                     if price_range <= 0:
                         continue
