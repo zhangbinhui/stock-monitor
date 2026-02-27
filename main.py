@@ -2410,9 +2410,19 @@ def build_html_report(result: pd.DataFrame, summary_df: pd.DataFrame, index_data
             bias20_val = item.get('bias20', 0)
             bias60_val = item.get('bias60', 0)
 
+            # 东方财富行情链接
+            _code = item.get('code', '')
+            if _code.startswith(('sh000', 'sz399')):
+                # 指数页
+                _em_url = f"https://quote.eastmoney.com/center/gridlist.html#index_{_code[:2]}"
+            else:
+                _raw = _code.lstrip('sh').lstrip('sz') if _code[:2] in ('sh','sz') else _code
+                _em_p = 'sh' if _raw.startswith(('51','60','68','11')) else 'sz'
+                _em_url = f"https://quote.eastmoney.com/{_em_p}{_raw}.html"
+
             index_rows += f"""
             <tr style="background:{bg_color};">
-                <td style="{cell_style}">{item['name']}</td>
+                <td style="{cell_style}"><a href="{_em_url}" style="color:#2980b9;text-decoration:none;">{item['name']}</a></td>
                 <td style="{cell_right_style}">{item['current_price']:.3f}</td>
                 <td style="{cell_right_style};color:{change_color};">{item['change_pct']:+.2f}%</td>
                 <td style="{cell_right_style}">{item['ma20']:.3f}</td>
