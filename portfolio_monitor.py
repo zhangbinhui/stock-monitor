@@ -1196,7 +1196,10 @@ def format_report(account, results, total_mv, total_pnl, today_pnl, cash_pct, an
     lines.append("━━━ 💼 持仓明细 ━━━")
     for r in results:
         type_tag = f" [{r.get('stock_type', '')}]" if r.get('stock_type') else ""
-        lines.append(f"\n{r['advice_icon']} <b>{r['name']}</b> ({r['code']}){type_tag}")
+        # 东方财富行情链接
+        em_prefix = 'sh' if r['code'].startswith(('51', '60', '68', '11')) else 'sz'
+        em_url = f"https://quote.eastmoney.com/{em_prefix}{r['code']}.html"
+        lines.append(f"\n{r['advice_icon']} <b>{r['name']}</b> (<a href=\"{em_url}\">{r['code']}</a>){type_tag}")
         pnl_pct_str = f"{r['pnl_pct']:+.2f}%"
         pnl_str = f"{r['pnl']:+,.0f}元"
         chg_str = f"{r['change_pct']:+.2f}%"
